@@ -3,14 +3,37 @@
 Fabrikadaki makine metriklerini (SQL Server'da tutulan) anlamlı bilgiye çevirip web üzerinde görselleştiren, **tamamen offline / localhost** çalışan prototip.
 Şu an veriler **simülatörden** (yer tutucu) gelir; gerçek veri gelince aynı arayüz SQL Server'a bağlanacak.
 
-## Çalıştırma
+## Hızlı başlangıç
+
+Gereksinimler: [Node.js](https://nodejs.org) **20.19 veya üzeri** (ya da 22.12+) ve Git. Sürümü `node -v` ile kontrol edebilirsin.
+
+1. Repoyu klonla:
+   ```bash
+   git clone https://github.com/ahmethamdiozen/factory-monitor.git
+   ```
+2. Proje klasörüne gir:
+   ```bash
+   cd factory-monitor
+   ```
+3. Bağımlılıkları kur (ilk seferde internet gerekir, sonrasında gerekmez):
+   ```bash
+   npm install
+   ```
+4. Geliştirme sunucusunu başlat:
+   ```bash
+   npm run dev
+   ```
+5. Tarayıcıda aç: **http://localhost:5173**
+
+Durdurmak için terminalde `Ctrl + C`.
+
+## Diğer komutlar
 
 ```bash
-npm install
-npm run dev        # http://localhost:5173
 npm test           # KPI, SPC ve simülatör testleri
-npm run typecheck
+npm run typecheck  # TypeScript kontrolü
 npm run build      # dist/ — statik dosyalar, internet gerektirmez
+npm run preview    # build çıktısını yerelde önizle
 ```
 
 Uygulama hiçbir dış kaynağa istek atmaz (font, ikon, avatar hepsi pakete gömülü).
