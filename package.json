@@ -16,7 +16,10 @@
     "collector": "tsx --tsconfig server/tsconfig.json server/collector/index.ts",
     "api": "tsx --tsconfig server/tsconfig.json server/api/index.ts",
     "stack": "concurrently -k -n sim,collector,api,web -c yellow,cyan,magenta,green \"npm:sim\" \"npm:collector\" \"npm:api\" \"npm:dev\"",
-    "sim:reset": "npm run sim -- --reset"
+    "sim:reset": "npm run sim -- --reset",
+    "dev:demo": "vite --mode demo",
+    "build:demo": "tsc -b && vite build --mode demo",
+    "preview:demo": "vite preview --mode demo"
   },
   "dependencies": {
     "@ag-grid-community/locale": "^36.2.0",
@@ -53,5 +56,8 @@
     "typescript": "~6.0.2",
     "vite": "^8.3.0",
     "vitest": "^5.0.2"
+  },
+  "engines": {
+    "node": ">=22.13"
   }
 }

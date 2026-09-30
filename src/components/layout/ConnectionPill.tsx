@@ -1,5 +1,6 @@
 import { AlertTriangle, Loader2, WifiOff } from 'lucide-react'
 import { useEffect, useState } from 'react'
+import { IS_DEMO } from '@/data/DataSource'
 import { useFactory } from '@/data/store'
 import { cn } from '@/lib/utils'
 
@@ -35,7 +36,7 @@ export function ConnectionPill({ floating = false }: { floating?: boolean }) {
     cls = 'text-fg-2'
     body = (
       <>
-        <span className="pulse-dot size-2 rounded-full bg-good" /> Canlı · {conn.dataUntil ? ago(now - conn.dataUntil) : '—'}
+        <span className="pulse-dot size-2 rounded-full bg-good" /> {IS_DEMO ? 'Demo' : 'Canlı'} · {conn.dataUntil ? ago(now - conn.dataUntil) : '—'}
       </>
     )
   } else if (conn.state === 'stale') {
@@ -57,9 +58,9 @@ export function ConnectionPill({ floating = false }: { floating?: boolean }) {
   return (
     <div
       role="status"
-      title={conn.error ?? undefined}
+      title={conn.error ?? (IS_DEMO ? 'Demo modu: makineler ve veri hattı tarayıcıda simüle ediliyor' : undefined)}
       className={cn(
-        'inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium',
+        'inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-medium',
         cls,
         floating && 'fixed bottom-4 right-4 z-50 border bg-card shadow-lg',
       )}

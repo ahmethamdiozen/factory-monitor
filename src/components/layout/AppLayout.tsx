@@ -5,6 +5,7 @@ import { ConnectionPill } from '@/components/layout/ConnectionPill'
 import { TopNav } from '@/components/layout/TopNav'
 import { Button } from '@/components/ui/button'
 import { SHIFTS, shiftOf } from '@/data/registry'
+import { IS_DEMO } from '@/data/DataSource'
 import { useFactory } from '@/data/store'
 
 function Clock() {
@@ -21,7 +22,7 @@ function Clock() {
         <div className="tnum text-[15px] font-semibold">{d.toLocaleTimeString('tr-TR')}</div>
         <div className="text-[11px] text-fg-2">{d.toLocaleDateString('tr-TR', { weekday: 'short', day: 'numeric', month: 'short' })}</div>
       </div>
-      <div className="rounded-md bg-wash px-2 py-1 text-xs font-medium">
+      <div className="whitespace-nowrap rounded-md bg-wash px-2 py-1 text-xs font-medium">
         {sh.name} <span className="text-fg-2">{String(sh.startHour).padStart(2, '0')}–{String(sh.endHour).padStart(2, '0')}</span>
       </div>
     </div>
@@ -42,7 +43,7 @@ function Waiting() {
               API'ye ulaşılamadı, 5 sn'de bir yeniden deneniyor. Veri hattını başlatmak için: <code className="rounded bg-wash px-1">npm run stack</code>
             </>
           ) : (
-            'SQL Server → Collector → API hattından son 30 saat alınıyor.'
+            IS_DEMO ? 'Makineler tarayıcıda simüle ediliyor, son 24 saat hazırlanıyor…' : 'SQL Server → Collector → API hattından son 30 saat alınıyor.'
           )}
         </p>
         {offline && conn.error && <p className="mt-2 text-xs text-fg-3">{conn.error}</p>}

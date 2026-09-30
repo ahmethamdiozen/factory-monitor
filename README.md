@@ -11,10 +11,16 @@ Veri, fabrikadaki gerçek yolu izler:
 
 Gerçek veri geldiğinde sadece ilk kutu (simülatör) kalkar; gerisi aynen çalışır.
 
-## Hızlı başlangıç
+## Kurulumsuz demo (web)
+
+**https://ahmethamdiozen.github.io/factory-monitor/**
+
+Hiçbir şey kurmadan tarayıcıda açılır. Bu sürümde tüm hat (makine simülasyonu → SQL Server'a yazılacak ham satırlar → collector'ın anlamlandırması) tarayıcının içinde çalışır; SQL Server, collector ve API yoktur. Ekranlar tam sürümle aynıdır. `main`'e her push'ta GitHub Actions ile otomatik güncellenir (`.github/workflows/pages.yml`). Yerelde denemek için: `npm run dev:demo`.
+
+## Tam sürüm (SQL Server ile) — hızlı başlangıç
 
 Gereksinimler:
-- [Node.js](https://nodejs.org) **20.19+** (ya da 22.12+). SQLite için Node'un yerleşik `node:sqlite` modülü kullanılır; **Node 24 önerilir**.
+- [Node.js](https://nodejs.org) **22.13 veya üzeri** (24 LTS önerilir). Collector, Node'un yerleşik `node:sqlite` modülünü kullanır; daha eski Node sürümlerinde çalışmaz. Sürümü `node -v` ile kontrol edin.
 - Git
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/). **Apple Silicon (M1/M2/M3…) Mac'lerde:** Settings → General → *"Use Rosetta for x86_64/amd64 emulation on Apple Silicon"* açık olmalı. Kapalıysa SQL Server açılır açılmaz çöker.
 
@@ -23,7 +29,7 @@ Gereksinimler:
    git clone https://github.com/ahmethamdiozen/factory-monitor.git
    cd factory-monitor
    ```
-2. Ayar dosyasını oluştur:
+2. Ayar dosyasını oluştur (Windows'ta `cp` yerine `copy`):
    ```bash
    cp .env.example .env
    ```
@@ -42,6 +48,29 @@ Gereksinimler:
 6. Tarayıcıda aç: **http://localhost:5173**
 
 İlk açılışta simülatör son 24 saati SQL Server'a yazar (~1 sn), collector bunu okur (~1 sn), sonra her şey gerçek saatle 10 sn'de bir akar. Durdurmak için `Ctrl + C`; SQL Server'ı kapatmak için `npm run db:down`.
+
+### Windows
+
+**Seçenek 1 — Docker ile (en kolay):**
+1. [Docker Desktop for Windows](https://www.docker.com/products/docker-desktop/)'u kurun. Kurulum WSL 2'yi ister; onaylayın ve bilgisayarı yeniden başlatın.
+2. Docker Desktop'ı açın, sol altta "Engine running" yazana kadar bekleyin.
+3. PowerShell'de yukarıdaki 1–6. adımları uygulayın (`cp` yerine `copy .env.example .env`).
+
+**Seçenek 2 — Docker'sız, SQL Server'ı doğrudan kurarak:**
+1. [SQL Server 2022 Express](https://www.microsoft.com/sql-server/sql-server-downloads)'i (ücretsiz) indirin, **Custom** kurulumu seçin.
+2. Kurulumda *Database Engine Configuration* adımında **Mixed Mode**'u seçin ve `sa` için bir şifre belirleyin.
+3. **SQL Server Configuration Manager**'ı açın → *SQL Server Network Configuration* → *Protocols for SQLEXPRESS* → **TCP/IP**'yi *Enabled* yapın. TCP/IP'nin özelliklerinde *IP Addresses* sekmesinin en altındaki **IPAll** bölümünde *TCP Dynamic Ports*'u boşaltın ve *TCP Port*'a `1433` yazın.
+4. *SQL Server Services* altında **SQL Server (SQLEXPRESS)**'i yeniden başlatın.
+5. `copy .env.example .env` yapın ve `.env` içindeki `MSSQL_SA_PASSWORD`'ü kurulumda belirlediğiniz şifreyle değiştirin.
+6. `npm install`, sonra `npm run stack` (bu seçenekte `npm run db:up` **çalıştırılmaz**). Veritabanı ve tablolar ilk açılışta otomatik oluşur.
+
+### Mac (Intel)
+
+Mac için SQL Server'ın doğrudan kurulan sürümü yoktur; Docker gerekir. Intel Mac'lerde Rosetta ayarı **gerekmez**, SQL Server doğrudan çalışır:
+1. [Docker Desktop for Mac — Intel chip](https://www.docker.com/products/docker-desktop/) sürümünü kurun ve açın.
+2. Terminalde yukarıdaki 1–6. adımları uygulayın.
+
+Docker kurmak istemeyen herkes için: yukarıdaki **kurulumsuz demo** linki.
 
 ## Ekranlar
 
@@ -81,6 +110,8 @@ npm test           # KPI, SPC, kural motoru ve dönüştürücü testleri (SQL g
 npm run typecheck  # frontend + server TypeScript kontrolü
 npm run build      # dist/ — statik dosyalar
 npm run sim | collector | api | dev   # parçaları ayrı ayrı çalıştırmak için
+npm run dev:demo   # kurulumsuz demo sürümünü yerelde aç (backend gerekmez)
+npm run build:demo # demo sürümünü dist/'e derle (GitHub Pages'e giden)
 ```
 
 Uygulama hiçbir dış kaynağa istek atmaz (font, ikon, avatar hepsi pakete gömülü).
@@ -98,7 +129,7 @@ src/
   sim/                   makine simülasyonu (machineSim), PLC kaydedici, tohum veri
   pipeline/              SQL satır tipleri, dönüştürücü (saf, testli), yerel test hattı
   lib/                   kpi.ts, spc.ts, rules.ts — saf hesaplar
-  data/                  ApiDataSource, registry (API'den doldurulur), snapshot, shiftView
+  data/                  ApiDataSource (tam sürüm), demo/DemoDataSource (web demosu), registry, snapshot, shiftView
   components/, pages/    arayüz (operator/, foreman/, SqlData, mühendis sayfaları)
 ```
 

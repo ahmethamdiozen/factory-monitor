@@ -1,5 +1,6 @@
 import { BookOpen, FlaskConical, LayoutDashboard, ListChecks, ShieldCheck, TrendingDown, Users } from 'lucide-react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
+import { IS_DEMO } from '@/data/DataSource'
 import { cn } from '@/lib/utils'
 
 const NAV = [
@@ -50,7 +51,15 @@ export function EngineerLayout() {
           <div className="flex items-start gap-2 rounded-lg border border-dashed p-2.5 text-[11px] leading-snug text-fg-2">
             <FlaskConical className="mt-0.5 size-3.5 shrink-0 text-warning-text" />
             <span>
-              <b className="text-fg">Simüle makineler.</b> Veri gerçek hattan akıyor (SQL Server → Collector → API); sadece makineler simülatör.
+              {IS_DEMO ? (
+                <>
+                  <b className="text-fg">Demo modu.</b> Makineler ve veri hattı tarayıcıda simüle ediliyor; gerçek kurulumda veri SQL Server'dan gelir.
+                </>
+              ) : (
+                <>
+                  <b className="text-fg">Simüle makineler.</b> Veri gerçek hattan akıyor (SQL Server → Collector → API); sadece makineler simülatör.
+                </>
+              )}
             </span>
           </div>
         </div>

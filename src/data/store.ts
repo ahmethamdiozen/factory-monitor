@@ -1,6 +1,8 @@
 import { create } from 'zustand'
 import { ApiDataSource } from '@/data/api/ApiDataSource'
-import type { ConnStatus } from '@/data/api/ApiDataSource'
+import { DemoDataSource } from '@/data/demo/DemoDataSource'
+import { IS_DEMO } from '@/data/DataSource'
+import type { ConnStatus, LiveSource } from '@/data/DataSource'
 
 export type Theme = 'dark' | 'light'
 
@@ -14,9 +16,10 @@ function initialTheme(): Theme {
   return 'dark'
 }
 
-// Tek veri kaynağı örneği (HMR'de yeniden oluşmasın)
-const g = globalThis as unknown as { __fmSource?: ApiDataSource }
-export const source: ApiDataSource = (g.__fmSource ??= new ApiDataSource())
+// Tek veri kaynağı örneği (HMR'de yeniden oluşmasın).
+// Demo derlemesinde (GitHub Pages) tüm hat tarayıcıda çalışır; normalde API'den okunur.
+const g = globalThis as unknown as { __fmSource?: LiveSource }
+export const source: LiveSource = (g.__fmSource ??= IS_DEMO ? new DemoDataSource() : new ApiDataSource())
 
 interface FactoryStore {
   tick: number
