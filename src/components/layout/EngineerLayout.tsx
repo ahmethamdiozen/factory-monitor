@@ -1,6 +1,6 @@
 import { BookOpen, FlaskConical, LayoutDashboard, ListChecks, ShieldCheck, TrendingDown, Users } from 'lucide-react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
-import { IS_DEMO } from '@/data/DataSource'
+import { IS_DEMO } from '@/data/mode'
 import { cn } from '@/lib/utils'
 
 const NAV = [

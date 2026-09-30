@@ -36,6 +36,3 @@ export interface LiveSource extends DataSource {
   start(): void
   status(): ConnStatus
 }
-
-/** Derleme modu: `vite --mode demo` ile .env.demo'daki VITE_DATA_MODE=demo okunur. */
-export const IS_DEMO = import.meta.env.VITE_DATA_MODE === 'demo'

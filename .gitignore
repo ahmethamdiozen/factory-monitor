@@ -44,4 +44,4 @@ Thumbs.db
 .claude/
 
 # Collector'ın yerel deposu ve simülatör durumu
-data/
+/data/

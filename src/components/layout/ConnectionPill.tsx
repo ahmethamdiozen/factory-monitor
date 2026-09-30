@@ -1,6 +1,6 @@
 import { AlertTriangle, Loader2, WifiOff } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { IS_DEMO } from '@/data/DataSource'
+import { IS_DEMO } from '@/data/mode'
 import { useFactory } from '@/data/store'
 import { cn } from '@/lib/utils'
 

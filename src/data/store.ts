@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { ApiDataSource } from '@/data/api/ApiDataSource'
 import { DemoDataSource } from '@/data/demo/DemoDataSource'
-import { IS_DEMO } from '@/data/DataSource'
+import { IS_DEMO } from '@/data/mode'
 import type { ConnStatus, LiveSource } from '@/data/DataSource'
 
 export type Theme = 'dark' | 'light'

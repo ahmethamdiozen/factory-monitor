@@ -5,7 +5,7 @@ import { ConnectionPill } from '@/components/layout/ConnectionPill'
 import { TopNav } from '@/components/layout/TopNav'
 import { Button } from '@/components/ui/button'
 import { SHIFTS, shiftOf } from '@/data/registry'
-import { IS_DEMO } from '@/data/DataSource'
+import { IS_DEMO } from '@/data/mode'
 import { useFactory } from '@/data/store'
 
 function Clock() {
