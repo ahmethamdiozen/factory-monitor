@@ -7,6 +7,11 @@ export const SHIFTS: Shift[] = [
   { id: 'C', name: 'C Vardiyası', startHour: 22, endHour: 6 },
 ]
 
+/**
+ * Statik fabrika tanımı. SADECE simülatörün SQL Server'a yazdığı tohum verisidir ve
+ * testlerde kullanılır. Arayüz bu dosyayı değil, API'den doldurulan src/data/registry.ts'i kullanır.
+ */
+
 /** Üretim günü başlangıç saati (A vardiyası ile aynı). */
 export const DAY_START_HOUR = 6
 
@@ -49,6 +54,7 @@ export const SLOW_REASONS: SlowReason[] = [
   { id: 4, label: 'Yüksek sıcaklık (soğutma)' },
   { id: 5, label: 'Durma sonrası ısınma' },
   { id: 6, label: 'Besleme dalgalanması' },
+  { id: 7, label: 'Neden belirlenemedi' },
 ]
 
 export const DEFECT_TYPES: Record<string, { label: string; weight: number }[]> = {
@@ -180,6 +186,9 @@ export const PEOPLE: Person[] = makePeople()
 /** Hikâye: B vardiyasında Montaj 4'teki operatör yeni başlamış (yavaşlık nedeni "operatör tecrübesi"). */
 const rookie = PEOPLE.find((p) => p.id === 'O-B-M08')
 if (rookie) rookie.experienceYears = 0.4
+
+/** Personel sicil numarası (SQL Server'daki EmployeeId) */
+export const EMPLOYEE_NO: Record<string, string> = Object.fromEntries(PEOPLE.map((p, i) => [p.id, `P${1001 + i}`]))
 
 export function shiftOf(t: number): ShiftId {
   const h = new Date(t).getHours()

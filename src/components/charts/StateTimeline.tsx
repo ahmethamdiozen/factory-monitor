@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { EChart } from '@/components/charts/EChart'
 import { baseOption, hhmm, useChartTokens } from '@/components/charts/theme'
-import { REASON_BY_ID, SLOW_REASONS } from '@/data/mock/factory'
+import { REASON_BY_ID, SLOW_REASONS } from '@/data/registry'
 import type { Segment, SlowSegment } from '@/data/machineView'
 import { fmtDuration } from '@/lib/kpi'
 import { STATE_KEYS, STATE_LABEL } from '@/lib/types'

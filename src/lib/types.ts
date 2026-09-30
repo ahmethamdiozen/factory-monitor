@@ -132,3 +132,12 @@ export const WINDOW_LABEL: Record<WindowKey, string> = {
   day: 'Bugün (06:00→)',
   h24: 'Son 24 saat',
 }
+
+/** API'nin /api/meta cevabı: arayüzün kullandığı referans verisi (SQL Server'dan gelir). */
+export interface FactoryMeta {
+  datasetId: string
+  lines: Line[]
+  machines: Machine[]
+  reasons: DowntimeReason[]
+  people: Person[]
+}

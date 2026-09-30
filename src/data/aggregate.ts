@@ -1,5 +1,5 @@
 import { source } from '@/data/store'
-import { MACHINES } from '@/data/mock/factory'
+import { MACHINES } from '@/data/registry'
 import { idxOf, machineKpi, sumKpi } from '@/lib/kpi'
 import type { Kpi } from '@/lib/kpi'
 import type { Machine } from '@/lib/types'

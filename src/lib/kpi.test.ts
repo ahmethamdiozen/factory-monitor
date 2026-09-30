@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { MockDataSource } from '@/data/mock/simulator'
-import { MACHINES } from '@/data/mock/factory'
+import { runLocalPipeline } from '@/pipeline/localPipeline'
+import { MACHINES } from '@/data/registry'
 import { machineKpi, projection, sumKpi, windowRange } from '@/lib/kpi'
 import { capability, controlLimits, detectViolations, referenceLimits } from '@/lib/spc'
 import { BUCKET_MS, STATE } from '@/lib/types'
@@ -77,54 +77,44 @@ describe('projection', () => {
   })
 })
 
-describe('MockDataSource', () => {
-  it('aynı seed ile deterministik, tick parçalamasından bağımsız', () => {
-    const a = new MockDataSource()
-    const b = new MockDataSource()
-    a.dispose()
-    b.dispose()
-    const sa = a.machineSeries('M05')
-    const sb = b.machineSeries('M05')
-    expect(sa.length).toBe(sb.length)
-    expect(Array.from(sa.ok.slice(0, 500))).toEqual(Array.from(sb.ok.slice(0, 500)))
+describe('yerel pipeline (sim → PLC satırları → dönüştürücü)', () => {
+  const t0 = new Date(2026, 8, 29, 17, 40).getTime()
+  const startT = t0 - 24 * 3600 * 1000
+  const run = runLocalPipeline(startT, t0, t0)
+  const ds = run.source
+
+  it('aynı t0 ile deterministik', () => {
+    const again = runLocalPipeline(startT, startT + 3600 * 1000, t0)
+    const a = Array.from(ds.machineSeries('M05').ok.slice(0, 300))
+    const b = Array.from(again.source.machineSeries('M05').ok.slice(0, 300))
+    expect(a).toEqual(b)
   })
 
   it('hikâye durumları t0 anında beklenen gibi', () => {
-    const ds = new MockDataSource()
-    ds.dispose()
     const last = (id: string) => ds.machineSeries(id).state[ds.machineSeries(id).length - 1]
     expect(last('M03')).toBe(STATE.CHANGEOVER)
     expect(last('M06')).toBe(STATE.MAINTENANCE)
     expect(last('M10')).toBe(STATE.STOPPED)
-    const w = windowRange(ds, 'day')
-    expect(w.i1 - w.i0).toBe((11 * 3600 + 40 * 60) / 10)
-    expect(ds.now()).toBe(ds.startT + ds.machineSeries('M01').length * BUCKET_MS)
+    expect(ds.now()).toBe(t0)
+    expect(ds.machineSeries('M01').length * BUCKET_MS).toBe(24 * 3600 * 1000)
   })
 
   it('makul OEE aralığı', () => {
-    const ds = new MockDataSource()
-    ds.dispose()
     const w = windowRange(ds, 'day')
     const kpis = MACHINES.map((m) => machineKpi(ds.machineSeries(m.id), m, w.i0, w.i1))
     const f = sumKpi(kpis)
-    console.log('OEE', (f.oee * 100).toFixed(1), 'A', (f.availability * 100).toFixed(1), 'P', (f.performance * 100).toFixed(1), 'Q', (f.quality * 100).toFixed(1))
-    kpis.forEach((k, i) => console.log(MACHINES[i].id, (k.oee * 100).toFixed(0), (k.availability * 100).toFixed(0)))
     expect(f.oee).toBeGreaterThan(0.5)
     expect(f.oee).toBeLessThan(0.9)
   })
 
-  it('SPC: aşınma makinesi son saatlerde kural ihlali üretir, sağlıklı makine üretmez', () => {
-    const ds = new MockDataSource()
-    ds.dispose()
+  it('SPC: aşınma makinesi kural ihlali üretir, sağlıklı makine üretmez', () => {
     const bad = ds.spc('M02').slice(-32)
     const vBad = detectViolations(bad, referenceLimits(MACHINES[1].spec))
     const cap = capability(bad, MACHINES[1].spec)!
-    console.log('M02 violations', vBad.length, 'cpk', cap.cpk.toFixed(2))
     expect(vBad.length).toBeGreaterThan(3)
     expect(cap.cpk).toBeLessThan(1.33)
     const good = ds.spc('M09').slice(-32)
     const vGood = detectViolations(good, referenceLimits(MACHINES[8].spec))
-    console.log('M09 violations', vGood.length)
     expect(vGood.length).toBeLessThan(vBad.length)
     expect(controlLimits(ds.spc('M09'))).not.toBeNull()
   })

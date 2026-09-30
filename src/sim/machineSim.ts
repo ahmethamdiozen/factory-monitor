@@ -1,0 +1,381 @@
+import { BUCKET_MS, BUCKET_SEC, STATE } from '@/lib/types'
+import type { Machine, StateCode } from '@/lib/types'
+import { between, gaussian, mulberry32 } from '@/lib/rng'
+import type { Rng } from '@/lib/rng'
+import { shiftOf } from './factoryDef'
+
+/**
+ * Tek bir makinenin "fiziksel" simülasyonu. Her 10 sn'lik dilim için bir PLC/SCADA
+ * sisteminin kaydedeceği ham sinyalleri üretir. Yavaşlık NEDENİNİ yazmaz; nedenler
+ * sinyal desenlerine gömülüdür ve analiz katmanı (src/lib/rules.ts) tarafından çıkarılır.
+ */
+
+const MIN = 60 * 1000
+const HOUR = 60 * MIN
+export const SPC_EVERY_BUCKETS = 90 // 15 dk
+export const SPC_N = 5
+const WARMUP_BUCKETS = 36 // 6 dk
+
+/** Simülatörün gerçek nedeni (SQL'e yazılmaz; sadece testlerde doğrulama için). */
+export const TRUTH = { NONE: 0, WEAR: 1, MATERIAL: 2, OPERATOR: 3, TEMP: 4, WARMUP: 5, FEED: 6 } as const
+
+interface ForcedSegment {
+  fromMin: number
+  toMin: number
+  kind: 'stop' | 'slow'
+  state?: Exclude<StateCode, 0>
+  reasonId: number
+  factor?: number
+}
+
+interface Story {
+  eff?: number
+  wear?: boolean
+  rookieInB?: boolean
+  forced?: ForcedSegment[]
+}
+
+/** Demo için bilinçli gömülmüş "hikâyeler" (dakikalar simülatörün başladığı ana, t0'a göre). */
+export const STORIES: Record<string, Story> = {
+  M02: { eff: 0.98, wear: true },
+  M03: { forced: [{ fromMin: -18, toMin: 9, kind: 'stop', state: STATE.CHANGEOVER, reasonId: 4 }] },
+  M04: { forced: [{ fromMin: -50, toMin: 30, kind: 'slow', reasonId: TRUTH.TEMP, factor: 0.84 }] },
+  M06: { forced: [{ fromMin: -35, toMin: 40, kind: 'stop', state: STATE.MAINTENANCE, reasonId: 8 }] },
+  M08: { eff: 0.97, rookieInB: true },
+  M09: { forced: [{ fromMin: -40, toMin: 20, kind: 'slow', reasonId: TRUTH.FEED, factor: 0.82 }] },
+  M10: { forced: [{ fromMin: -22, toMin: 14, kind: 'stop', state: STATE.STOPPED, reasonId: 6 }] },
+  M11: { forced: [{ fromMin: -40, toMin: 20, kind: 'slow', reasonId: TRUTH.FEED, factor: 0.8 }] },
+  M12: { forced: [{ fromMin: -170, toMin: -122, kind: 'stop', state: STATE.STOPPED, reasonId: 1 }] },
+}
+
+/** Takım ömrü (çevrim). ENJ-02 12 saatte bir takım değiştirir; diğerleri ürün değişiminde. */
+export function toolLifeCycles(m: Machine): number {
+  return Math.round((m.idealRate * 12 * 3600) / 1000) * 1000
+}
+
+export interface RawSample {
+  machineId: string
+  /** Dilim başlangıcı (ms) */
+  t: number
+  status: StateCode
+  reasonId: number
+  produced: number
+  rejects: number
+  /** Ortalama çevrim süresi (ms); makine çalışmıyorsa 0 */
+  cycleTimeMs: number
+  temperatureC: number
+  vibrationMmS: number
+  feedPct: number
+  toolCycles: number
+  materialLot: string
+  /** 15 dk'da bir 5'li kalite ölçümü */
+  quality: number[] | null
+  /** Sadece doğrulama için: simülatörün uyguladığı baskın yavaşlama nedeni */
+  truthSlow: number
+}
+
+interface Params {
+  eff: number
+  baseNok: number
+  mtbfMin: number
+  microMin: number
+  changeoverH: number
+  plannedH: number
+  materialH: number
+  spcBias: number
+  spcOffset: number
+  baseTemp: number
+}
+
+interface Seg {
+  state: Exclude<StateCode, 0>
+  reasonId: number
+  remaining: number
+}
+
+interface SlowEp {
+  cause: number
+  factor: number
+  remaining: number
+}
+
+export class MachineSim {
+  readonly machine: Machine
+  private readonly rng: Rng
+  private readonly p: Params
+  private readonly story: Story
+  private readonly t0: number
+  private seg: Seg | null = null
+  private warmup = 0
+  private slow: SlowEp | null = null
+  private forcedWasActive = false
+  private noise = 0
+  private acc = 0
+  private temp: number
+  private toolCycles = 0
+  private lastWearAge = 0
+  private lotNo = 1
+  private started = false
+
+  constructor(machine: Machine, idx: number, t0: number) {
+    this.machine = machine
+    this.t0 = t0
+    this.rng = mulberry32(1000 + idx * 7919)
+    this.story = STORIES[machine.id] ?? {}
+    const r = this.rng
+    this.p = {
+      eff: this.story.eff ?? between(r, 0.93, 0.985),
+      baseNok: between(r, 0.004, 0.016),
+      mtbfMin: between(r, 420, 900),
+      microMin: between(r, 14, 32),
+      changeoverH: between(r, 10, 18),
+      plannedH: between(r, 24, 44),
+      materialH: between(r, 9, 16),
+      spcBias: gaussian(r) * 0.15,
+      spcOffset: Math.floor(r() * SPC_EVERY_BUCKETS),
+      baseTemp: 40 + idx * 0.6,
+    }
+    this.temp = this.p.baseTemp
+    this.toolCycles = Math.floor(r() * toolLifeCycles(machine) * 0.3)
+  }
+
+  private forcedAt(t: number): ForcedSegment | undefined {
+    return this.story.forced?.find((s) => t >= this.t0 + s.fromMin * MIN && t < this.t0 + s.toMin * MIN)
+  }
+
+  private get lot(): string {
+    return `L${this.machine.id.slice(1)}-${String(this.lotNo).padStart(4, '0')}`
+  }
+
+  private startSeg(t: number): void {
+    const r = this.rng
+    // Demo anı çevresinde rastgele planlı/ayar duruşu başlatma (hikâye senaryosu bozulmasın)
+    const nearNow = t > this.t0 - 90 * MIN && t < this.t0 + 120 * MIN
+    const b = (sec: number) => Math.max(1, Math.round(sec / BUCKET_SEC))
+    const p = this.p
+    const per = (meanSec: number) => BUCKET_SEC / meanSec
+    const sh = shiftOf(t)
+    const hazard = sh === 'C' ? 1.6 : sh === 'B' ? 1.05 : 1
+    const u = r()
+    let c = per(p.mtbfMin * 60) * hazard
+    if (u < c) {
+      const rr = r()
+      this.seg = { state: STATE.STOPPED, reasonId: rr < 0.5 ? 1 : rr < 0.85 ? 2 : 3, remaining: b(between(r, 20, 90) * 60) }
+      return
+    }
+    c += per(p.microMin * 60)
+    if (u < c) {
+      this.seg = { state: STATE.STOPPED, reasonId: 10, remaining: b(between(r, 20, 120)) }
+      return
+    }
+    if (!nearNow) c += per(p.changeoverH * 3600)
+    if (!nearNow && u < c) {
+      this.seg = { state: STATE.CHANGEOVER, reasonId: r() < 0.7 ? 4 : 5, remaining: b(between(r, 15, 35) * 60) }
+      return
+    }
+    if (!nearNow) c += per(p.plannedH * 3600)
+    if (!nearNow && u < c) {
+      const clean = r() < 0.35
+      this.seg = { state: STATE.MAINTENANCE, reasonId: clean ? 11 : 8, remaining: b((clean ? between(r, 15, 30) : between(r, 30, 60)) * 60) }
+      return
+    }
+    c += per(p.materialH * 3600)
+    if (u < c) {
+      this.seg = { state: STATE.STOPPED, reasonId: 6, remaining: b(between(r, 5, 20) * 60) }
+      return
+    }
+    c += per(60 * 3600)
+    if (u < c) {
+      this.seg = { state: STATE.STOPPED, reasonId: 7, remaining: b(between(r, 10, 25) * 60) }
+      return
+    }
+    c += per(30 * 3600)
+    if (u < c) this.seg = { state: STATE.STOPPED, reasonId: 9, remaining: b(between(r, 8, 20) * 60) }
+  }
+
+  /** Aşınma yaşı (saat): 12 saatte bir takım değişir, t0'da yaş 8 sa. */
+  private wearAgeH(t: number): number {
+    const since = t - (this.t0 - 8 * HOUR)
+    const cycle = 12 * HOUR
+    return (((since % cycle) + cycle) % cycle) / HOUR
+  }
+
+  /** Dilim indeksi i (seri başından), dilim başlangıcı t. Sırayla çağrılmalı. */
+  step(i: number, t: number): RawSample {
+    const r = this.rng
+    const m = this.machine
+    const sh = shiftOf(t)
+    const forced = this.forcedAt(t)
+    let state: StateCode = STATE.RUNNING
+    let reasonId = 0
+
+    if (forced && forced.kind === 'stop') {
+      state = forced.state!
+      reasonId = forced.reasonId
+      this.seg = null
+      this.forcedWasActive = true
+    } else {
+      if (this.forcedWasActive) {
+        this.forcedWasActive = false
+        this.warmup = WARMUP_BUCKETS
+      }
+      if (this.seg) {
+        this.seg.remaining -= 1
+        if (this.seg.remaining < 0) {
+          if (this.seg.reasonId !== 10) this.warmup = WARMUP_BUCKETS
+          if (this.seg.reasonId === 4) {
+            // Ürün değişimi: yeni takım ve yeni hammadde lotu
+            this.toolCycles = 0
+            this.lotNo++
+          }
+          this.seg = null
+        }
+      }
+      if (!this.seg && this.started) this.startSeg(t)
+      if (this.seg) {
+        state = this.seg.state
+        reasonId = this.seg.reasonId
+      }
+    }
+    this.started = true
+
+    // Aşınma hikâyesi: takım yaşı başa sararsa takım değişmiştir
+    let wearLoss = 0
+    if (this.story.wear) {
+      const age = this.wearAgeH(t)
+      // İlk adımda takım sayacı takımın yaşıyla tutarlı başlar; yaş başa sararsa takım değişmiştir
+      if (i === 0) this.toolCycles = Math.round(age * m.idealRate * 3600 * 0.9)
+      else if (age < this.lastWearAge) this.toolCycles = 0
+      this.lastWearAge = age
+      wearLoss = 0.1 * Math.pow(age / 8, 1.3)
+    }
+
+    const ambient = 26
+    if (state !== STATE.RUNNING) {
+      this.slow = null
+      this.temp += (ambient - this.temp) * 0.004
+      return {
+        machineId: m.id,
+        t,
+        status: state,
+        reasonId,
+        produced: 0,
+        rejects: 0,
+        cycleTimeMs: 0,
+        temperatureC: round(this.temp + gaussian(r) * 0.2, 1),
+        vibrationMmS: round(0.1 + Math.abs(gaussian(r)) * 0.05, 2),
+        feedPct: 0,
+        toolCycles: this.toolCycles,
+        materialLot: this.lot,
+        quality: null,
+        truthSlow: TRUTH.NONE,
+      }
+    }
+
+    // Yavaşlama bölümleri (hikâye veya rastgele)
+    let slowFactor = 1
+    let slowCause = 0
+    if (forced && forced.kind === 'slow') {
+      slowFactor = forced.factor! + gaussian(r) * 0.01
+      slowCause = forced.reasonId
+      this.slow = null
+    } else {
+      if (this.slow) {
+        this.slow.remaining -= 1
+        if (this.slow.remaining < 0) this.slow = null
+      }
+      if (!this.slow && r() < BUCKET_SEC / (7 * 3600)) {
+        const pool = [TRUTH.MATERIAL, TRUTH.TEMP, TRUTH.FEED]
+        const cause = pool[Math.floor(r() * pool.length)]
+        this.slow = { cause, factor: between(r, 0.72, 0.86), remaining: Math.round(between(r, 20, 60) * 6) }
+        if (cause === TRUTH.MATERIAL) this.lotNo++
+      }
+      if (this.slow) {
+        slowFactor = this.slow.factor
+        slowCause = this.slow.cause
+      }
+    }
+
+    let warmFactor = 1
+    if (this.warmup > 0) {
+      warmFactor = 0.72 + 0.28 * (1 - this.warmup / WARMUP_BUCKETS)
+      this.warmup -= 1
+    }
+    const rookieFactor = this.story.rookieInB && sh === 'B' ? 0.85 : 1
+    const shiftEff = sh === 'C' ? 0.965 : sh === 'B' ? 0.99 : 1
+
+    this.noise = this.noise * 0.9 + gaussian(r) * 0.009
+    const base = (this.p.eff + this.noise) * shiftEff
+
+    const factors: [number, number][] = [
+      [slowFactor, slowCause],
+      [warmFactor, TRUTH.WARMUP],
+      [1 - wearLoss, TRUTH.WEAR],
+      [rookieFactor, TRUTH.OPERATOR],
+    ]
+    let minF = 1
+    let truth = 0
+    let prod = 1
+    for (const [f, c] of factors) {
+      prod *= f
+      if (f < minF) {
+        minF = f
+        truth = c
+      }
+    }
+    const speed = Math.max(0.05, base * prod)
+
+    this.acc += m.idealRate * BUCKET_SEC * speed
+    const total = Math.floor(this.acc)
+    this.acc -= total
+
+    let pNok = this.p.baseNok
+    pNok += Math.max(0, 0.93 - warmFactor) * 0.2
+    pNok += wearLoss * 0.35
+    if (slowCause === TRUTH.MATERIAL) pNok += 0.02
+    if (slowFactor < 0.9) pNok += 0.004
+    pNok = Math.min(0.2, pNok)
+    let nok = Math.round(total * pNok + gaussian(r) * Math.sqrt(total * pNok * (1 - pNok)))
+    nok = Math.max(0, Math.min(total, nok))
+    this.toolCycles += total
+
+    // Sinyaller
+    const tempTarget = slowCause === TRUTH.TEMP ? 59 : this.p.baseTemp
+    this.temp += (tempTarget - this.temp) * (slowCause === TRUTH.TEMP ? 0.25 : 0.05)
+    const feed = slowCause === TRUTH.FEED ? 100 * slowFactor + gaussian(r) * 2.5 : 100 + gaussian(r) * 1.2
+    const vib = 1.8 + 12 * wearLoss + Math.abs(gaussian(r)) * 0.15
+
+    let quality: number[] | null = null
+    if ((i + this.p.spcOffset) % SPC_EVERY_BUCKETS === 0) {
+      const spec = m.spec
+      const drift = this.story.wear ? 0.2 * spec.sigma * this.wearAgeH(t) : 0
+      quality = []
+      for (let k = 0; k < SPC_N; k++) quality.push(round(spec.nominal + this.p.spcBias * spec.sigma + drift + gaussian(r) * spec.sigma, 4))
+    }
+
+    return {
+      machineId: m.id,
+      t,
+      status: state,
+      reasonId,
+      produced: total,
+      rejects: nok,
+      cycleTimeMs: Math.round(1000 / (m.idealRate * speed)),
+      temperatureC: round(this.temp + gaussian(r) * 0.3, 1),
+      vibrationMmS: round(vib, 2),
+      feedPct: round(feed, 1),
+      toolCycles: this.toolCycles,
+      materialLot: this.lot,
+      quality,
+      truthSlow: minF < 0.93 ? truth : TRUTH.NONE,
+    }
+  }
+}
+
+function round(v: number, d: number): number {
+  const f = 10 ** d
+  return Math.round(v * f) / f
+}
+
+/** Dilim sınırına hizalar. */
+export const alignBucket = (t: number) => Math.floor(t / BUCKET_MS) * BUCKET_MS

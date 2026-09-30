@@ -41,3 +41,6 @@ Thumbs.db
 
 # Claude Code yerel ayarları
 .claude/
+
+# Collector'ın yerel deposu ve simülatör durumu
+data/

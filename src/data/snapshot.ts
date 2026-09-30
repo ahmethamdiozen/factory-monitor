@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { source, useFactory } from '@/data/store'
-import { DOWNTIME_REASONS, LINES, MACHINES, PEOPLE, REASON_BY_ID, SLOW_REASONS, foremanFor, operatorFor, shiftOf } from '@/data/mock/factory'
+import { DOWNTIME_REASONS, LINES, MACHINES, PEOPLE, REASON_BY_ID, SLOW_REASONS, foremanFor, operatorFor, shiftOf } from '@/data/registry'
 import { detectViolations, referenceLimits } from '@/lib/spc'
 import type { Kpi, ProjectionInfo } from '@/lib/kpi'
 import { dayStartOf, idxOf, machineKpi, projection, shiftStartOf, sumKpi } from '@/lib/kpi'

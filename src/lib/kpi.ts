@@ -1,5 +1,5 @@
 import type { DataSource } from '@/data/DataSource'
-import { DAY_START_HOUR, REASON_BY_ID } from '@/data/mock/factory'
+import { DAY_START_HOUR, REASON_BY_ID } from '@/data/registry'
 import { BUCKET_MS, BUCKET_SEC, STATE } from '@/lib/types'
 import type { Machine, MachineSeries, StopEvent, WindowKey } from '@/lib/types'
 

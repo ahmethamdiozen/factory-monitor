@@ -8,8 +8,15 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "typecheck": "tsc -b",
-    "test": "vitest run"
+    "typecheck": "tsc -b && tsc -p server/tsconfig.json",
+    "test": "vitest run",
+    "db:up": "docker compose up -d --wait",
+    "db:down": "docker compose down",
+    "sim": "tsx --tsconfig server/tsconfig.json server/simulator/index.ts",
+    "collector": "tsx --tsconfig server/tsconfig.json server/collector/index.ts",
+    "api": "tsx --tsconfig server/tsconfig.json server/api/index.ts",
+    "stack": "concurrently -k -n sim,collector,api,web -c yellow,cyan,magenta,green \"npm:sim\" \"npm:collector\" \"npm:api\" \"npm:dev\"",
+    "sim:reset": "npm run sim -- --reset"
   },
   "dependencies": {
     "@ag-grid-community/locale": "^36.2.0",
@@ -23,7 +30,9 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "echarts": "^6.1.0",
+    "fastify": "^5.12.5",
     "lucide-react": "^1.48.0",
+    "mssql": "^12.7.2",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-router-dom": "^7.18.4",
@@ -32,12 +41,15 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",
+    "@types/mssql": "^12.3.0",
     "@types/node": "^24.13.3",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
     "@vitejs/plugin-react": "^6.1.1",
+    "concurrently": "^10.0.5",
     "oxlint": "^1.81.0",
     "tailwindcss": "^4.3.3",
+    "tsx": "^4.23.15",
     "typescript": "~6.0.2",
     "vite": "^8.3.0",
     "vitest": "^5.0.2"
