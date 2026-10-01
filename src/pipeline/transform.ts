@@ -1,13 +1,15 @@
 import { inferSlowReason, RULE, UNEXPLAINED_THRESHOLD } from '@/lib/rules'
 import { BUCKET_MS, STATE } from '@/lib/types'
 import { stateFromSqlStatus } from './rows'
-import type { CounterRow, EventRow, ProcessRow, QualityRow } from './rows'
+import type { CounterRow, EventRow, ProcessRow, QualityRow, TagRow } from './rows'
+import type { Channel, TagMap } from '@/sim/tags'
 
 /**
  * Collector'ın "anlamlandırma" katmanı (saf, testli). Bir makinenin SQL satırlarını
  * zaman sırasıyla alır ve bizim iç modelimizi üretir:
  *   kümülatif sayaç → 10 sn'lik OK/NOK, olaylar → dilim durumu + duruş kayıtları,
- *   çevrim süresi → hız %, süreç sinyalleri + kurallar → yavaşlık nedeni, ölçümler → SPC alt grubu.
+ *   çevrim süresi → hız %, historian etiketleri → ortak kanallar (sıcaklık, titreşim, yük…),
+ *   kanallar + kurallar → yavaşlık nedeni, ölçümler → SPC alt grubu.
  */
 
 export interface MachineInfo {
@@ -16,6 +18,10 @@ export interface MachineInfo {
   type?: string
   idealCycleMs: number
   toolLife: number
+  /** Etiket → kanal eşlemesi (dbo.MachineTags) */
+  tags?: TagMap[]
+  /** Kanal referansları (devreye alma değerleri) */
+  ref?: Partial<Record<Channel, number>>
 }
 
 export interface TransformContext {
@@ -32,11 +38,14 @@ export interface BucketOut {
   speed: number
   ok: number
   nok: number
+  /** Kanallar (makine tipine göre anlamı değişir, bkz. src/sim/tags.ts); ölçüm yoksa NaN */
   temp: number
   vib: number
-  feed: number
-  /** Motor akımı (A) */
+  hf: number
+  load: number
   cur: number
+  aux: number
+  feed: number
 }
 
 export interface StopOut {
@@ -140,7 +149,22 @@ export class MachineTransformer {
     }
   }
 
-  addCounter(c: CounterRow, pv: ProcessRow | undefined, out: TransformOutput): void {
+  /** Etiket satırlarından kanallar */
+  private channels(tags: TagRow[] | undefined): Record<Channel, number> {
+    const ch: Record<Channel, number> = { temp: NaN, vib: NaN, hf: NaN, load: NaN, cur: NaN, aux: NaN, feed: NaN }
+    if (!tags?.length || !this.info.tags) return ch
+    const v: Record<string, number> = {}
+    for (const r of tags) v[r.tag] = r.value
+    for (const d of this.info.tags) {
+      if (!d.channel || v[d.tag] === undefined) continue
+      if (d.relativeTo) {
+        if (v[d.relativeTo] !== undefined) ch[d.channel] = v[d.tag] - v[d.relativeTo]
+      } else ch[d.channel] = v[d.tag]
+    }
+    return ch
+  }
+
+  addCounter(c: CounterRow, pv: ProcessRow | undefined, out: TransformOutput, tags?: TagRow[]): void {
     const s = this.s
     if (s.prevTotal === null || s.prevReject === null) {
       // İlk okuma: sadece taban değer
@@ -174,6 +198,8 @@ export class MachineTransformer {
       s.lot = pv.materialLot
     }
 
+    const ch = this.channels(tags)
+    const ref = this.info.ref ?? {}
     let slowReason = 0
     const rulesApply = this.info.type !== 'furnace' && this.info.type !== 'cmm'
     if (running && s.speeds.length >= 3 && pv && !rulesApply) {
@@ -183,9 +209,10 @@ export class MachineTransformer {
       const speedAvg = s.speeds.reduce((a, b) => a + b, 0) / s.speeds.length
       slowReason = inferSlowReason({
         speedAvg,
-        temperatureC: pv.temperatureC,
-        feedPct: pv.feedPct,
-        vibrationMmS: pv.vibrationMmS,
+        tempDevC: ch.temp - (ref.temp ?? NaN),
+        feedPct: ch.feed,
+        vibRatio: ref.vib ? ch.vib / ref.vib : NaN,
+        hfRatio: ref.hf ? ch.hf / ref.hf : NaN,
         toolRatio: pv.toolCycleCount / this.info.toolLife,
         msSinceRestart: s.restartAt === null ? null : t - s.restartAt,
         msSinceLotChange: s.lotChangedAt === null ? null : t - s.lotChangedAt,
@@ -203,10 +230,7 @@ export class MachineTransformer {
       speed,
       ok: Math.max(0, dTotal - dReject),
       nok: Math.max(0, dReject),
-      temp: pv?.temperatureC ?? 0,
-      vib: pv?.vibrationMmS ?? 0,
-      feed: pv?.feedPct ?? 0,
-      cur: pv?.motorCurrentA ?? 0,
+      ...ch,
     })
   }
 

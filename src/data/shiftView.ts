@@ -2,7 +2,7 @@ import { downtimeByReason } from '@/data/machineView'
 import { MACHINES, REASON_BY_ID, SHIFTS, SLOW_REASONS, foremanFor, operatorFor, shiftOf } from '@/data/registry'
 import type { MachineLive, Snapshot } from '@/data/snapshot'
 import { source } from '@/data/store'
-import { activeRisk } from '@/data/predictiveView'
+import { activeRisk, sourceLabel } from '@/data/predictiveView'
 import { failureStats, idxOf, machineKpi, parts, sumKpi } from '@/lib/kpi'
 import type { Kpi } from '@/lib/kpi'
 import { detectViolations, referenceLimits } from '@/lib/spc'
@@ -215,7 +215,11 @@ export function operatorTodos(live: MachineLive, w: ShiftWindow, now: number): T
     out.push({ tone: 'warning', text: `${a.todo}` })
   }
   const risk = activeRisk(m.id, live.state, live.reasonId)
-  if (risk?.level === 'alarm') out.push({ tone: 'serious', text: 'Arıza riski yüksek — bakım ekibine haber verildi; olağandışı ses, koku veya titreşim varsa bildir' })
+  if (risk?.level === 'alarm')
+    out.push({
+      tone: 'serious',
+      text: `Arıza riski yüksek${risk.source ? ` (${sourceLabel(risk.source, true)})` : ''} — bakım ekibine haber verildi; olağandışı ses, koku veya titreşim varsa bildir`,
+    })
   else if (risk?.level === 'watch') out.push({ tone: 'info', text: 'Makine sağlığı izleniyor — olağandışı bir şey fark edersen foreman\'e söyle' })
   const sp = shiftProgress(m, w, now)
   if (sp.nok > 0) out.push({ tone: 'serious', text: 'Uygunsuz parça çıktı — parçayı karantinaya ayır, kaliteye bildir (MRB)' })
@@ -258,9 +262,9 @@ export function interventions(snap: Snapshot, lineId: string, w: ShiftWindow): I
         code: m.code,
         tone: alarm ? 'serious' : 'warning',
         rank: alarm ? 0.5 : 4.5,
-        title: alarm ? `ARIZA RİSKİ YÜKSEK · %${Math.round(risk.risk * 100)}` : `Arıza riski artıyor · %${Math.round(risk.risk * 100)}`,
+        title: `${alarm ? 'ARIZA RİSKİ YÜKSEK' : 'Arıza riski artıyor'} · %${Math.round(risk.risk * 100)}${risk.source ? ` · olası kaynak: ${sourceLabel(risk.source, true)}` : ''}`,
         detail: risk.factors[0]?.text ?? 'Birden fazla sinyal normalin dışında',
-        action: alarm ? 'Bakım ekibiyle bu vardiya kontrol planla' : 'Sonraki planlı bakımda kontrol ettir',
+        action: alarm ? 'Bakım ekibiyle bu vardiya kontrol planla; sıradaki parçayı riske atma' : 'Sonraki planlı bakımda kontrol ettir',
       })
     }
     if (l.state !== STATE.RUNNING) {

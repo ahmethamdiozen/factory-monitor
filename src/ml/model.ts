@@ -1,4 +1,6 @@
 import { FEATURE_NAMES } from './features'
+import type { MachineType } from '@/lib/types'
+import type { ModeId } from '@/lib/failureModes'
 
 /** ml/train.py'nin ürettiği modelin biçimi (src/ml/modelData.ts) */
 export interface TreeJson {
@@ -59,6 +61,12 @@ export interface ModelData {
   metricsWatch: EvalMetrics
   baseline: { logisticCaughtPct: number; boostingCaughtPct: number }
   learningCurve: { months: number; trainFailures: number; caughtPct: number; caughtPredictablePct: number; leadHoursMedian: number; averagePrecision: number }[]
+  /** Makine tipine göre özellik → olası arıza türü eşlemesi */
+  sources: Partial<Record<MachineType, Partial<Record<string, ModeId>>>>
+  /** Test döneminde arıza türüne göre yakalama */
+  byMode: { mode: ModeId | 'sudden'; failures: number; caught: number; leadHoursMedian: number }[]
+  /** Yakalanan arızalarda olası kaynağın doğru bulunma oranı */
+  sourceAccuracy: { checked: number; correct: number }
   samples: { x: number[]; p: number }[]
 }
 

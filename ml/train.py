@@ -4,14 +4,15 @@
   npm run ml:dataset   # önce eğitim verisini üret (data/ml/dataset.csv)
   npm run ml:train     # bu betik → src/ml/modelData.ts
 
-Soru: "Bu makinede önümüzdeki 24 saatte arıza olacak mı?"
+Soru: "Bu makinede önümüzdeki 72 saatte (3 gün) arıza olacak mı?"
 Model: sığ ağaçlı Gradient Boosting (scikit-learn). Ağaçlar TypeScript'e aktarılır; model
 hem collector'da hem tarayıcıda (web demo) Python'suz çalışır. Python sadece eğitim içindir.
 
 Değerlendirme olay bazındadır (fabrikanın sorduğu soru budur):
-  - yakalanan arıza: arızadan 1–24 saat önce en az bir alarm verildiyse
+  - yakalanan arıza: arızadan 1–72 saat önce en az bir alarm verildiyse
   - uyarı süresi: arızadan kaç saat önce ilk alarm verildi
-  - boş alarm: ardından 24 saat içinde arıza gelmeyen alarm dönemi (makine-hafta başına)
+  - boş alarm: ardından 72 saat içinde arıza gelmeyen alarm dönemi (makine-hafta başına)
+  - arıza türüne göre yakalama ve "olası kaynak" eşlemesinin doğruluğu
 """
 from __future__ import annotations
 
@@ -35,47 +36,77 @@ INFO = ROOT / "data" / "ml" / "dataset-info.json"
 OUT = ROOT / "src" / "ml" / "modelData.ts"
 
 FEATURES = [
-    "cur_ratio_1h", "cur_slope_24h", "vib_1h", "vib_slope_24h", "temp_dev_1h",
-    "micro_6h", "micro_24h", "speed_cv_1h", "run_h_since_maint", "line_L1", "line_L2", "line_L3",
+    "load_ratio_1h", "load_slope_24h", "vib_ratio_1h", "vib_slope_24h", "hf_ratio_1h", "hf_slope_24h",
+    "temp_dev_1h", "temp_slope_24h", "cur_ratio_1h", "cur_slope_24h", "aux_ratio_1h", "aux_slope_24h",
+    "feed_sd_1h", "micro_6h", "micro_24h", "speed_cv_1h", "run_h_since_maint", "h_since_changeover",
+    "type_cnc", "type_grinder", "type_furnace", "type_coating",
 ]
+STATIC = {"type_cnc", "type_grinder", "type_furnace", "type_coating"}
 HOUR = 3600 * 1000
 DAY = 24 * HOUR
-TEST_DAYS = 30
-VAL_DAYS = 30
+HORIZON_H = 72
+TEST_DAYS = 90
+VAL_DAYS = 60
+
+# Olası kaynak: riski artıran özellik hangi arıza türünün belirti izine ait (makine tipine göre).
+# TypeScript (src/ml/predict.ts likelySource) bu tabloyu modelle birlikte alır.
+SOURCE_MAP = {
+    "cnc": {
+        "hf_ratio_1h": "bearing", "hf_slope_24h": "bearing", "vib_ratio_1h": "bearing", "vib_slope_24h": "bearing",
+        "cur_ratio_1h": "axis", "cur_slope_24h": "axis", "speed_cv_1h": "axis",
+        "aux_ratio_1h": "coolant", "aux_slope_24h": "coolant", "temp_dev_1h": "coolant", "temp_slope_24h": "coolant",
+    },
+    "grinder": {
+        "hf_ratio_1h": "bearing", "hf_slope_24h": "bearing", "vib_ratio_1h": "bearing", "vib_slope_24h": "bearing",
+        "aux_ratio_1h": "coolant", "aux_slope_24h": "coolant", "temp_dev_1h": "coolant", "temp_slope_24h": "coolant",
+    },
+    "furnace": {
+        "load_ratio_1h": "heater", "load_slope_24h": "heater", "temp_dev_1h": "heater", "temp_slope_24h": "heater",
+        "aux_ratio_1h": "vacuum", "aux_slope_24h": "vacuum",
+    },
+    "coating": {
+        "load_ratio_1h": "gun", "load_slope_24h": "gun",
+        "feed_sd_1h": "feeder", "micro_6h": "feeder", "micro_24h": "feeder",
+    },
+}
 ALARM_FA_BUDGET = 0.5   # makine-hafta başına en fazla boş alarm ("Riskli")
 WATCH_FA_BUDGET = 2.0   # "Dikkat" seviyesi daha hassas
 
 
 # macOS'un Accelerate matris kütüphanesi numpy 2 ile zararsız "matmul" uyarıları üretir
 warnings.filterwarnings("ignore", message=".*encountered in matmul", category=RuntimeWarning)
+warnings.filterwarnings("ignore", message="X does not have valid feature names")
 
 
 def make_model(seed: int = 42) -> GradientBoostingClassifier:
-    return GradientBoostingClassifier(n_estimators=150, max_depth=3, learning_rate=0.08, subsample=0.8, random_state=seed)
+    return GradientBoostingClassifier(n_estimators=200, max_depth=3, learning_rate=0.08, subsample=0.8, random_state=seed)
 
 
 def failures_of(df: pd.DataFrame) -> pd.DataFrame:
     """Örneklerdeki 'bir sonraki arıza' bilgisinden arıza olaylarını çıkarır."""
     f = df[df.hours_to_failure >= 0].copy()
     f["ft"] = (f.t + (f.hours_to_failure * HOUR).round()).astype("int64")
-    f = f.groupby(["machine_id", "ft"], as_index=False).agg(predictable=("next_failure_predictable", "max"))
+    f["mode"] = f.next_failure_mode.fillna("").astype(str)
+    f = f.groupby(["machine_id", "ft"], as_index=False).agg(predictable=("next_failure_predictable", "max"), mode=("mode", "first"))
     return f
 
 
-def evaluate(df: pd.DataFrame, prob: np.ndarray, thr: float, t_from: int, t_to: int) -> dict:
+def evaluate(df: pd.DataFrame, prob: np.ndarray, thr: float, t_from: int, t_to: int, detail: bool = False) -> dict:
     d = df.assign(p=prob, alarm=prob >= thr)
     all_fails = failures_of(d)
     fails = all_fails[(all_fails.ft >= t_from + DAY) & (all_fails.ft < t_to)]
     caught, leads, caught_pred, n_pred, caught_sud, n_sud = 0, [], 0, 0, 0, 0
+    hits = []  # (makine, arıza zamanı, tür, yakalandı mı, ilk alarm zamanı)
     false_eps, eps = 0, 0
     for mid, g in d.groupby("machine_id"):
         g = g.sort_values("t")
         at = g.t[g.alarm].to_numpy()
         mf = fails[fails.machine_id == mid]
-        for ft, pred in zip(mf.ft, mf.predictable):
-            w = at[(at >= ft - 24 * HOUR) & (at <= ft - HOUR)]
+        for ft, pred, mode in zip(mf.ft, mf.predictable, mf["mode"]):
+            w = at[(at >= ft - HORIZON_H * HOUR) & (at <= ft - HOUR)]
             hit = len(w) > 0
             caught += hit
+            hits.append((mid, ft, mode, hit, int(w.min()) if hit else None))
             if hit:
                 leads.append((ft - w.min()) / HOUR)
             if pred == 1:
@@ -96,11 +127,11 @@ def evaluate(df: pd.DataFrame, prob: np.ndarray, thr: float, t_from: int, t_to: 
             ends.append(at[-1])
             for s, e in zip(starts, ends):
                 eps += 1
-                if not np.any((all_ft > s) & (all_ft <= e + 24 * HOUR)):
+                if not np.any((all_ft > s) & (all_ft <= e + HORIZON_H * HOUR)):
                     false_eps += 1
     machine_weeks = d.machine_id.nunique() * (t_to - t_from) / (7 * DAY)
     n = len(fails)
-    return {
+    out = {
         "failures": int(n),
         "caught": int(caught),
         "caughtPct": caught / n if n else 0.0,
@@ -115,14 +146,18 @@ def evaluate(df: pd.DataFrame, prob: np.ndarray, thr: float, t_from: int, t_to: 
         "falseAlarmsPerMachineWeek": false_eps / machine_weeks if machine_weeks else 0.0,
         "precision": (eps - false_eps) / eps if eps else 0.0,
     }
+    if detail:
+        out["hits"] = hits
+    return out
 
 
-def pick_threshold(df: pd.DataFrame, prob: np.ndarray, budget: float, t_from: int, t_to: int) -> float:
-    """Boş alarm bütçesini aşmadan en çok arıza yakalayan eşik."""
+def pick_threshold(df: pd.DataFrame, prob: np.ndarray, budget: float, t_from: int, t_to: int, lowest: bool = False) -> float:
+    """Boş alarm bütçesini aşmadan en çok arıza yakalayan eşik.
+    lowest=True: aynı başarıdaki en düşük (en hassas) eşik — "Dikkat" seviyesi için."""
     best_thr, best = 0.99, -1.0
-    for thr in np.arange(0.95, 0.04, -0.01):
+    for thr in np.arange(0.95, 0.04, -0.02):
         m = evaluate(df, prob, float(thr), t_from, t_to)
-        if m["falseAlarmsPerMachineWeek"] <= budget and m["caughtPct"] > best:
+        if m["falseAlarmsPerMachineWeek"] <= budget and (m["caughtPct"] > best or (lowest and m["caughtPct"] >= best)):
             best, best_thr = m["caughtPct"], float(thr)
     return round(best_thr, 2)
 
@@ -152,16 +187,43 @@ def manual_proba(model_json: dict, x: np.ndarray) -> float:
     return 1.0 / (1.0 + math.exp(-raw))
 
 
+def impacts(model: GradientBoostingClassifier, x: np.ndarray, reference: list[float]) -> np.ndarray:
+    """Her özelliği sağlıklı referansa çekince riskin ne kadar düştüğü (TS explain ile aynı)."""
+    base = model.predict_proba(x.reshape(1, -1))[0, 1]
+    alts = np.repeat(x.reshape(1, -1), len(FEATURES), axis=0)
+    for i in range(len(FEATURES)):
+        alts[i, i] = reference[i]
+    out = base - model.predict_proba(alts)[:, 1]
+    for i, f in enumerate(FEATURES):
+        if f in STATIC:
+            out[i] = 0.0
+    return out
+
+
+def likely_source(model, x: np.ndarray, mtype: str, reference: list[float]) -> str | None:
+    """TS likelySource ile aynı: eşlenen özelliklerin pozitif etkileri türe göre toplanır."""
+    m = SOURCE_MAP.get(mtype)
+    if not m:
+        return None
+    imp = impacts(model, x, reference)
+    score: dict[str, float] = {}
+    for i, f in enumerate(FEATURES):
+        if f in m and imp[i] > 0:
+            score[m[f]] = score.get(m[f], 0.0) + float(imp[i])
+    best = max(score.items(), key=lambda kv: kv[1], default=(None, 0.0))
+    return best[0] if best[1] > 0.02 else None
+
+
 def main() -> None:
     df = pd.read_csv(DATA).sort_values(["t", "machine_id"]).reset_index(drop=True)
     info = json.loads(INFO.read_text())
     t_end = int(df.t.max()) + HOUR
     test_from = t_end - TEST_DAYS * DAY
-    # 24 saatlik etiket penceresi sızmasın diye eğitim test başlangıcından 1 gün önce biter
-    train = df[df.t < test_from - DAY]
+    # 72 saatlik etiket penceresi sızmasın diye eğitim test başlangıcından 3 gün önce biter
+    train = df[df.t < test_from - HORIZON_H * HOUR]
     test = df[df.t >= test_from]
     val_from = int(train.t.max()) + HOUR - VAL_DAYS * DAY
-    fit = train[train.t < val_from - DAY]
+    fit = train[train.t < val_from - HORIZON_H * HOUR]
     val = train[train.t >= val_from]
     print(f"eğitim {len(train)} · doğrulama {len(val)} · test {len(test)} satır")
 
@@ -170,13 +232,14 @@ def main() -> None:
     p_val = m_fit.predict_proba(val[FEATURES])[:, 1]
     vt_to = int(val.t.max()) + HOUR
     thr_alarm = pick_threshold(val, p_val, ALARM_FA_BUDGET, val_from, vt_to)
-    thr_watch = min(thr_alarm, pick_threshold(val, p_val, WATCH_FA_BUDGET, val_from, vt_to))
+    thr_watch = min(thr_alarm, pick_threshold(val, p_val, WATCH_FA_BUDGET, val_from, vt_to, lowest=True))
     print(f"eşikler: Dikkat ≥ {thr_watch} · Riskli ≥ {thr_alarm}")
 
     # 2) Son model: tüm eğitim dönemiyle
     model = make_model().fit(train[FEATURES], train.label)
     p_test = model.predict_proba(test[FEATURES])[:, 1]
-    metrics = evaluate(test, p_test, thr_alarm, test_from, t_end)
+    metrics = evaluate(test, p_test, thr_alarm, test_from, t_end, detail=True)
+    hits = metrics.pop("hits")
     metrics_watch = evaluate(test, p_test, thr_watch, test_from, t_end)
 
     # Karşılaştırma: lojistik regresyon, aynı boş alarm bütçesinde
@@ -194,7 +257,7 @@ def main() -> None:
     #    Tek eğitim gürültülüdür (test döneminde ~80 arıza); her nokta 3 farklı tohumun ortalaması.
     curve = []
     train_end = int(train.t.max()) + HOUR
-    for months in [0.25, 0.5, 1, 2, 3, 5]:
+    for months in [1, 2, 3, 4, 6]:
         sub = train[train.t >= train_end - months * 30 * DAY]
         n_fail = len(failures_of(sub))
         if sub.label.nunique() < 2:
@@ -210,9 +273,27 @@ def main() -> None:
         curve.append({"months": months, "trainFailures": int(n_fail), "caughtPct": float(r[0]), "caughtPredictablePct": float(r[1]), "leadHoursMedian": float(r[2]), "averagePrecision": float(r[3])})
         print(f"  {months} ay · {n_fail} arıza örneği → yakalanan %{r[0] * 100:.0f} (öngörülebilir %{r[1] * 100:.0f}) · AP {r[3]:.2f}")
 
-    # 4) Açıklamalar için "sağlıklı" referans: yıpranması düşük, arıza yaklaşmayan örneklerin medyanı
-    healthy = train[(train.label == 0) & (train.degradation < 0.3)]
+    # 4) Açıklamalar için "sağlıklı" referans: bozulması düşük, arıza yaklaşmayan örneklerin medyanı
+    healthy = train[(train.label == 0) & (train.degradation < 0.2)]
     reference = [float(healthy[f].median()) for f in FEATURES]
+
+    # 5) Arıza türüne göre yakalama ve olası kaynağın doğruluğu (ilk alarm anında)
+    by_mode = []
+    for mode in sorted({h[2] for h in hits}, key=lambda m: (m == "", m)):
+        hs = [h for h in hits if h[2] == mode]
+        leads = [(h[1] - h[4]) / HOUR for h in hs if h[3]]
+        by_mode.append({"mode": mode or "sudden", "failures": len(hs), "caught": sum(1 for h in hs if h[3]), "leadHoursMedian": float(np.median(leads)) if leads else 0.0})
+    checked = correct = 0
+    test_idx = test.set_index(["machine_id", "t"])
+    for mid, ft, mode, hit, first in hits:
+        if not hit or not mode:
+            continue
+        row = test_idx.loc[(mid, first)]
+        src = likely_source(model, row[FEATURES].to_numpy(dtype=float), row.machine_type, reference)
+        checked += 1
+        correct += src == mode
+    source_acc = {"checked": checked, "correct": correct}
+    print("türe göre:", ", ".join(f"{b['mode']} {b['caught']}/{b['failures']}" for b in by_mode), f"· olası kaynak doğru {correct}/{checked}")
 
     raw_init = float(np.log(model.init_.class_prior_[1] / model.init_.class_prior_[0]))
     model_json = {
@@ -231,8 +312,8 @@ def main() -> None:
     data = {
         "version": 1,
         "trainedAt": date.today().isoformat(),
-        "algorithm": "Gradient Boosting (150 ağaç, derinlik 3)",
-        "horizonHours": 24,
+        "algorithm": "Gradient Boosting (200 ağaç, derinlik 3)",
+        "horizonHours": HORIZON_H,
         "features": FEATURES,
         "thresholds": {"watch": thr_watch, "alarm": thr_alarm},
         **model_json,
@@ -243,6 +324,9 @@ def main() -> None:
         "metricsWatch": metrics_watch,
         "baseline": baseline,
         "learningCurve": curve,
+        "sources": SOURCE_MAP,
+        "byMode": by_mode,
+        "sourceAccuracy": source_acc,
         "samples": [{"x": [float(v) for v in x], "p": float(p)} for x, p in zip(xs, ps)],
     }
     OUT.write_text(

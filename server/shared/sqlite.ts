@@ -3,14 +3,27 @@ import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { env } from './env'
 
+/**
+ * Yerel deponun yapı sürümü. Depo SQL Server'dan türetilmiş bir ön bellektir: yapı değişince
+ * tablolar düşürülür ve collector her şeyi SQL Server'dan yeniden okur.
+ */
+const STORE_VERSION = 3
+
 /** Collector'ın yerel deposu. Collector yazar, API okur (WAL modu ile eşzamanlı). */
 export function openSqlite(): DatabaseSync {
   mkdirSync(dirname(env.sqlitePath), { recursive: true })
   // timeout: başka süreç (collector/API) kilitliyse beklesin, hemen hata vermesin
   const db = new DatabaseSync(env.sqlitePath, { timeout: 10_000 })
+  db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;')
+  const v = (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version
+  if (v !== STORE_VERSION) {
+    db.exec(`
+      DROP TABLE IF EXISTS kv; DROP TABLE IF EXISTS bucket; DROP TABLE IF EXISTS stop_event; DROP TABLE IF EXISTS slow_event;
+      DROP TABLE IF EXISTS spc_subgroup; DROP TABLE IF EXISTS risk; DROP TABLE IF EXISTS notification; DROP TABLE IF EXISTS sync_state;
+      PRAGMA user_version = ${STORE_VERSION};
+    `)
+  }
   db.exec(`
-    PRAGMA journal_mode = WAL;
-    PRAGMA synchronous = NORMAL;
 
     CREATE TABLE IF NOT EXISTS kv (
       k TEXT PRIMARY KEY,
@@ -26,10 +39,14 @@ export function openSqlite(): DatabaseSync {
       speed       REAL    NOT NULL,
       ok          INTEGER NOT NULL,
       nok         INTEGER NOT NULL,
-      temp        REAL    NOT NULL,
-      vib         REAL    NOT NULL,
-      feed        REAL    NOT NULL,
-      cur         REAL    NOT NULL DEFAULT 0,
+      -- Ortak kanallar (makine tipine göre anlamı: src/sim/tags.ts); NULL = ölçüm yok
+      temp        REAL,
+      vib         REAL,
+      hf          REAL,
+      load        REAL,
+      cur         REAL,
+      aux         REAL,
+      feed        REAL,
       PRIMARY KEY (machine_id, t)
     ) WITHOUT ROWID;
     CREATE INDEX IF NOT EXISTS bucket_t ON bucket (t);
@@ -73,6 +90,7 @@ export function openSqlite(): DatabaseSync {
       risk       REAL    NOT NULL,
       level      TEXT    NOT NULL,
       factors    TEXT    NOT NULL,
+      source     TEXT,
       PRIMARY KEY (machine_id, t)
     ) WITHOUT ROWID;
     CREATE INDEX IF NOT EXISTS risk_t ON risk (t);
@@ -88,6 +106,7 @@ export function openSqlite(): DatabaseSync {
       recipients  TEXT    NOT NULL,
       risk        REAL    NOT NULL,
       factors     TEXT    NOT NULL,
+      source      TEXT,
       status      TEXT    NOT NULL DEFAULT 'new',
       status_at   INTEGER,
       failure_at  INTEGER
@@ -101,9 +120,6 @@ export function openSqlite(): DatabaseSync {
       rows_total   INTEGER NOT NULL
     );
   `)
-  // Göç: önceki sürümün bucket tablosunda motor akımı kolonu yoktu
-  const cols = db.prepare('PRAGMA table_info(bucket)').all() as { name: string }[]
-  if (!cols.some((c) => c.name === 'cur')) db.exec('ALTER TABLE bucket ADD COLUMN cur REAL NOT NULL DEFAULT 0')
   return db
 }
 

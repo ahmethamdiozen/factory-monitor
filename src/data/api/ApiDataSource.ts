@@ -5,6 +5,7 @@ import type { BucketRow } from '@/data/series'
 import { BUCKET_MS } from '@/lib/types'
 import type { FactoryMeta, MachineSeries, SlowEvent, SpcPoint, StopEvent } from '@/lib/types'
 import type { MaintNotification, NotificationStatus, RiskPoint } from '@/ml/types'
+import type { SignalPoint } from '@/data/signals'
 
 /**
  * Gerçek veri hattından (SQL Server → Collector → SQLite → API) beslenen veri kaynağı.
@@ -58,6 +59,8 @@ export class ApiDataSource implements LiveSource {
   private risk = new Map<string, RiskPoint[]>()
   private lastRiskT = 0
   private notes: MaintNotification[] = []
+  /** Sinyaller sadece istenen makine için, istendiğinde çekilir (makine detayı) */
+  private sig = new Map<string, { points: SignalPoint[]; at: number; loading: boolean }>()
   private eventCursor = 0
   private metaLoadedAt = 0
   private listeners = new Set<() => void>()
@@ -192,6 +195,22 @@ export class ApiDataSource implements LiveSource {
     this.notes = (await getJson<{ notifications: MaintNotification[] }>('/api/notifications')).notifications
   }
 
+  signals(id: string): SignalPoint[] {
+    const c = this.sig.get(id) ?? { points: [], at: 0, loading: false }
+    this.sig.set(id, c)
+    if (!c.loading && Date.now() - c.at > 60_000) {
+      c.loading = true
+      getJson<{ points: SignalPoint[] }>(`/api/signals?machine=${encodeURIComponent(id)}&since=${this.startT}`)
+        .then((r) => {
+          c.points = r.points
+          c.at = Date.now()
+          this.emit()
+        })
+        .catch(() => {})
+        .finally(() => (c.loading = false))
+    }
+    return c.points
+  }
   riskSeries(id: string): RiskPoint[] {
     return this.risk.get(id) ?? []
   }

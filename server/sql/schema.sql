@@ -102,24 +102,42 @@ CREATE TABLE dbo.ProductionCounters (
   INDEX IX_ProductionCounters_Time (MachineId, SampleTimeUtc)
 );
 GO
+-- Tezgâh kontrolörü / MES bağlamı (10 sn'de bir)
 IF OBJECT_ID('dbo.ProcessValues') IS NULL
 CREATE TABLE dbo.ProcessValues (
   Id              bigint IDENTITY(1,1) NOT NULL PRIMARY KEY,
   MachineId       varchar(10)  NOT NULL,
   SampleTimeUtc   datetime2(3) NOT NULL,
   CycleTimeMs     int          NOT NULL,
-  TemperatureC    decimal(5,1) NOT NULL,
-  VibrationMmS    decimal(6,2) NOT NULL,
-  FeedPct         decimal(5,1) NOT NULL,
   ToolCycleCount  int          NOT NULL,
   MaterialLot     varchar(20)  NOT NULL,
-  MotorCurrentA   decimal(6,1) NULL,
   INDEX IX_ProcessValues_Time (MachineId, SampleTimeUtc)
 );
 GO
--- Göç: önceki sürümle kurulmuş veritabanına motor akımı kolonunu ekle
-IF COL_LENGTH('dbo.ProcessValues', 'MotorCurrentA') IS NULL
-  ALTER TABLE dbo.ProcessValues ADD MotorCurrentA decimal(6,1) NULL;
+-- Historian: sensör etiketleri (makine tipine göre 1–7 etiket, 10 sn'de bir).
+-- Kopuk sensörün satırı yazılmaz.
+IF OBJECT_ID('dbo.ProcessTags') IS NULL
+CREATE TABLE dbo.ProcessTags (
+  Id             bigint IDENTITY(1,1) NOT NULL PRIMARY KEY,
+  MachineId      varchar(10)  NOT NULL,
+  SampleTimeUtc  datetime2(3) NOT NULL,
+  Tag            varchar(40)  NOT NULL,
+  Value          float        NOT NULL,
+  INDEX IX_ProcessTags_Time (MachineId, SampleTimeUtc)
+);
+GO
+-- Etiket sözlüğü: birim, açıklama, ortak kanal eşlemesi ve devreye alma referansı
+IF OBJECT_ID('dbo.MachineTags') IS NULL
+CREATE TABLE dbo.MachineTags (
+  MachineId    varchar(10)   NOT NULL REFERENCES dbo.Machines(MachineId),
+  Tag          varchar(40)   NOT NULL,
+  Channel      varchar(10)   NULL,     -- temp, vib, hf, load, cur, aux, feed
+  RelativeTo   varchar(40)   NULL,     -- kanal = bu etiket − RelativeTo (fırın: set değerinden sapma)
+  Unit         nvarchar(10)  NOT NULL,
+  Description  nvarchar(100) NOT NULL,
+  Baseline     float         NULL,     -- devreye alma referansı (sağlıklı makine)
+  PRIMARY KEY (MachineId, Tag)
+);
 GO
 IF OBJECT_ID('dbo.QualitySamples') IS NULL
 CREATE TABLE dbo.QualitySamples (

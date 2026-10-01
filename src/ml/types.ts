@@ -1,4 +1,5 @@
 import type { FeatureName } from './features'
+import type { ModeId } from '@/lib/failureModes'
 
 export type RiskLevel = 'good' | 'watch' | 'alarm'
 
@@ -22,6 +23,8 @@ export interface RiskPoint {
   risk: number
   level: RiskLevel
   factors: RiskFactor[]
+  /** Olası kaynak (arıza türü); belirlenemediyse null */
+  source?: ModeId | null
 }
 
 export type NotificationStatus = 'new' | 'read' | 'planned' | 'closed'
@@ -44,6 +47,7 @@ export interface MaintNotification {
   recipients: string[]
   risk: number
   factors: RiskFactor[]
+  source?: ModeId | null
   status: NotificationStatus
   statusAt: number | null
   /** Uyarıdan sonra gerçekten arıza olduysa zamanı */

@@ -1,5 +1,6 @@
 import type { DowntimeReason, Line, Machine, MachineType, Person, Shift, ShiftId, SlowReason, SpecLimits } from '@/lib/types'
 import { mulberry32, pick } from '@/lib/rng'
+import { TAGS, channelInfos, tagBaselines } from './tags'
 
 export const SHIFTS: Shift[] = [
   { id: 'A', name: 'A Vardiyası', startHour: 6, endHour: 14 },
@@ -153,6 +154,11 @@ export const MACHINES: Machine[] = DEFS.map((d, i) => ({
   dailyTarget: Math.max(1, Math.round(((d.batchSize * 24) / d.cycleH) * PLANNED_ATTAINMENT)),
   spec: d.spec,
 }))
+
+MACHINES.forEach((m, i) => {
+  const b = tagBaselines(m, i)
+  m.channels = channelInfos(TAGS[m.type].map((d) => ({ ...d, baseline: b[d.tag] ?? null })))
+})
 
 export const MACHINE_BY_ID: Record<string, Machine> = Object.fromEntries(MACHINES.map((m) => [m.id, m]))
 export const LINE_BY_ID: Record<string, Line> = Object.fromEntries(LINES.map((l) => [l.id, l]))

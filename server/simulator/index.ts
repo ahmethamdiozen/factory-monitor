@@ -2,7 +2,7 @@
  * FABRİKA TARAFI SİMÜLATÖRÜ — gerçek veri geldiğinde bu süreç tamamen kalkar.
  * 12 makineyi gerçek saatle simüle eder ve PLC'lerin yazacağı satırları SQL Server'a yazar.
  *   npm run sim            → kaldığı yerden devam (boşlukları doldurur)
- *   npm run sim -- --reset → her şeyi silip son 24 saati yeniden üretir
+ *   npm run sim -- --reset → her şeyi silip son 48 saati yeniden üretir
  */
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
@@ -131,7 +131,7 @@ setInterval(async () => {
       lastHousekeeping = Date.now()
       await ensureAssignments(pool, Date.now(), Date.now() + 7 * DAY)
       const cut = new Date(Date.now() - 7 * DAY)
-      for (const [tbl, col] of [['ProductionCounters', 'SampleTimeUtc'], ['ProcessValues', 'SampleTimeUtc'], ['QualitySamples', 'SampleTimeUtc'], ['MachineEvents', 'EventTimeUtc']]) {
+      for (const [tbl, col] of [['ProductionCounters', 'SampleTimeUtc'], ['ProcessValues', 'SampleTimeUtc'], ['ProcessTags', 'SampleTimeUtc'], ['QualitySamples', 'SampleTimeUtc'], ['MachineEvents', 'EventTimeUtc']]) {
         await pool.request().input('cut', cut).query(`DELETE FROM dbo.${tbl} WHERE ${col} < @cut`)
       }
     }

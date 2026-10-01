@@ -2,6 +2,19 @@ import { REASON_BY_ID } from '@/data/registry'
 import { source } from '@/data/store'
 import { STATE } from '@/lib/types'
 import type { RiskLevel, RiskPoint } from '@/ml/types'
+import { MODEL_DATA } from '@/ml/modelData'
+import { FAILURE_MODES } from '@/lib/failureModes'
+import type { ModeId } from '@/lib/failureModes'
+
+/** Tahmin ufku metni: "3 gün" / "24 saat" */
+export const HORIZON_TEXT = MODEL_DATA.horizonHours % 24 === 0 ? `${MODEL_DATA.horizonHours / 24} gün` : `${MODEL_DATA.horizonHours} saat`
+
+/** Olası kaynağın adı (küçük harfle cümle içinde kullanmak için lower=true) */
+export function sourceLabel(id: ModeId | null | undefined, lower = false): string | null {
+  if (!id) return null
+  const l = FAILURE_MODES[id].label
+  return lower ? l.toLocaleLowerCase('tr-TR') : l
+}
 
 /** Makinenin en son risk değerlendirmesi (yoksa null — ilk ~12 çalışma saati ya da arızada) */
 export function latestRisk(machineId: string): RiskPoint | null {
@@ -15,7 +28,13 @@ export function latestRisk(machineId: string): RiskPoint | null {
  */
 export function activeRisk(machineId: string, state: number, reasonId: number): RiskPoint | null {
   if (state === STATE.STOPPED && REASON_BY_ID[reasonId]?.category === 'breakdown') return null
-  return latestRisk(machineId)
+  const r = latestRisk(machineId)
+  if (!r) return null
+  // Onarım veya planlı bakımdan önceki değerlendirme artık geçerli değil (yeni veri birikene kadar risk gösterilmez)
+  const fixed = source
+    .stopEvents()
+    .some((e) => e.machineId === machineId && e.end !== null && e.end > r.t && (REASON_BY_ID[e.reasonId]?.category === 'breakdown' || e.reasonId === 8))
+  return fixed ? null : r
 }
 
 /** Görsel tonlar: durum renkleri her zaman ikon + kelimeyle birlikte kullanılır */

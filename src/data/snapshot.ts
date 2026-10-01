@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import { source, useFactory } from '@/data/store'
 import { DOWNTIME_REASONS, LINES, MACHINES, PEOPLE, REASON_BY_ID, SLOW_REASONS, foremanFor, operatorFor, shiftOf } from '@/data/registry'
 import { detectViolations, referenceLimits } from '@/lib/spc'
-import { activeRisk } from '@/data/predictiveView'
+import { HORIZON_TEXT, activeRisk, sourceLabel } from '@/data/predictiveView'
 import type { CycleInfo, Kpi, ProjectionInfo } from '@/lib/kpi'
 import { cycleInfo, dayStartOf, idxOf, machineKpi, parts, projection, shiftStartOf, sumKpi } from '@/lib/kpi'
 import { BUCKET_MS, BUCKET_SEC, STATE, STATE_KEYS } from '@/lib/types'
@@ -189,8 +189,8 @@ function buildAlerts(list: MachineLive[], now: number): Alert[] {
         t: risk.t,
         severity: 'serious',
         machineId: m.id,
-        title: `${m.code} · Arıza riski %${Math.round(risk.risk * 100)}`,
-        detail: risk.factors[0]?.text ?? '24 saat içinde arıza bekleniyor',
+        title: `${m.code} · Arıza riski %${Math.round(risk.risk * 100)}${risk.source ? ` · ${sourceLabel(risk.source, true)}` : ''}`,
+        detail: risk.factors[0]?.text ?? `${HORIZON_TEXT} içinde arıza bekleniyor`,
         open: true,
       })
     }

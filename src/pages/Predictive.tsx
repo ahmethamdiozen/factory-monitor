@@ -7,7 +7,10 @@ import { Card, CardHeader } from '@/components/ui/card'
 import { Meter } from '@/components/ui/meter'
 import { StatTile } from '@/components/ui/stat-tile'
 import { LINE_BY_ID, MACHINES, MACHINE_BY_ID, REASON_BY_ID } from '@/data/registry'
-import { LEVEL_STYLE, ago, latestRisk, pctRisk } from '@/data/predictiveView'
+import { HORIZON_TEXT, LEVEL_STYLE, activeRisk, ago, latestRisk, pctRisk, sourceLabel } from '@/data/predictiveView'
+import { FAILURE_MODES, MODES_OF_TYPE } from '@/lib/failureModes'
+import type { ModeId } from '@/lib/failureModes'
+import { MACHINE_TYPE_LABEL } from '@/lib/types'
 import { useSnapshot } from '@/data/snapshot'
 import { source } from '@/data/store'
 import { IS_DEMO } from '@/data/mode'
@@ -62,7 +65,8 @@ export default function Predictive() {
   const machines = useMemo(() => {
     return MACHINES.map((m) => {
       const live = snap.byId[m.id]
-      const r = latestRisk(m.id)
+      // Onarım / bakım sonrası eski değerlendirme gösterilmez (bkz. activeRisk)
+      const r = live ? activeRisk(m.id, live.state, live.reasonId) ?? null : latestRisk(m.id)
       const inBreakdown = live && live.state === 1 && REASON_BY_ID[live.reasonId]?.category === 'breakdown'
       const series = source.riskSeries(m.id).filter((p) => p.t > now - 48 * HOUR)
       return { m, r, inBreakdown, spark: series.filter((_, i) => i % 3 === 0).map((p) => p.risk) }
@@ -147,7 +151,14 @@ export default function Predictive() {
   }, [t, M])
 
   const met = M.metrics
-  const topImportance = M.importances.filter((i) => !i.feature.startsWith('line_')).slice(0, 6)
+  const topImportance = M.importances.filter((i) => !i.feature.startsWith('type_')).slice(0, 6)
+  const modeRows = M.byMode.filter((b) => b.mode !== 'sudden')
+  const sudden = M.byMode.find((b) => b.mode === 'sudden')
+  const typesOf = (mode: ModeId) =>
+    (Object.entries(MODES_OF_TYPE) as [keyof typeof MODES_OF_TYPE, ModeId[]][])
+      .filter(([, ms]) => ms.includes(mode))
+      .map(([t]) => MACHINE_TYPE_LABEL[t])
+      .join(', ')
   const impMax = Math.max(...topImportance.map((i) => i.value))
 
   return (
@@ -155,13 +166,14 @@ export default function Predictive() {
       <div className="flex items-start gap-2.5 rounded-xl border border-dashed bg-card px-4 py-3 text-sm">
         <FlaskConical className="mt-0.5 size-4 shrink-0 text-warning-text" />
         <p className="leading-relaxed text-fg-2">
-          <b className="text-fg">Model simüle veriyle eğitildi.</b> Aşağıdaki başarı oranları {M.dataset.days} günlük simülasyondan gelir. Gerçek fabrikada belirtiler daha gürültülü ve makineye özgüdür; model aynı yöntemle gerçek veriyle yeniden eğitilir ve bu sayfa
-          gerçek sonuçları gösterir. Karar modeldedir; bildirim metni şablondan üretilir (ileride küçük dil modeli ile).
+          <b className="text-fg">Model simüle veriyle eğitildi.</b> Başarı oranları {M.dataset.days} günlük simülasyondan gelir: her makine tipinin kendi arıza türleri, arızadan arızaya değişen belirti şiddeti, arızaya
+          benzeyen durumlar (ağır kesim, filtre tıkanması, şarj ağırlığı) ve sensör kopmaları dahil. Gerçek fabrikada model aynı yöntemle gerçek veriyle yeniden eğitilir ve bu sayfa gerçek sonuçları gösterir. Karar
+          modeldedir; bildirim metni şablondan üretilir (ileride küçük dil modeli ile).
         </p>
       </div>
 
       <section className="grid grid-cols-5 gap-4">
-        <StatTile label="Riskli makine" value={String(counts.alarm)} valueClass={counts.alarm ? 'text-critical-text' : 'text-good-text'} sub="24 saat içinde arıza bekleniyor" />
+        <StatTile label="Riskli makine" value={String(counts.alarm)} valueClass={counts.alarm ? 'text-critical-text' : 'text-good-text'} sub={`${HORIZON_TEXT} içinde arıza bekleniyor`} />
         <StatTile label="Dikkat" value={String(counts.watch)} valueClass={counts.watch ? 'text-warning-text' : ''} sub="Risk artıyor, izlenmeli" />
         <StatTile label="Açık bildirim" value={String(counts.open)} sub="Yeni + okunmuş, henüz bakım planlanmamış" />
         <StatTile label="Model · yakalanan arıza" value={p0(met.caughtPredictablePct)} sub={<>Öngörülebilir arızalar · ort. {dec(met.leadHoursMedian, 0)} sa önceden</>} />
@@ -187,19 +199,25 @@ export default function Predictive() {
                   <LevelBadge level={r.level} />
                 ) : (
                   <span className="inline-flex items-center gap-1 text-xs text-fg-3">
-                    <CircleDashed className="size-3" /> veri birikiyor
+                    <CircleDashed className="size-3" /> {spark.length ? 'yeniden değerlendiriliyor' : 'veri birikiyor'}
                   </span>
                 )}
               </div>
               <div className="flex items-end justify-between gap-2">
                 <div>
                   <div className="tnum text-2xl font-semibold leading-none">{r && !inBreakdown ? pctRisk(r.risk) : '—'}</div>
-                  <div className="mt-1 text-[11px] text-fg-2">24 sa içinde arıza riski</div>
+                  <div className="mt-1 text-[11px] text-fg-2">{HORIZON_TEXT} içinde arıza riski</div>
                 </div>
                 <RiskSpark values={spark} alarm={M.thresholds.alarm} />
               </div>
               <div className="min-h-[16px] truncate text-[11px] text-fg-2" title={r?.factors.map((f) => f.text).join(' · ')}>
-                {!inBreakdown && r?.factors[0]?.text}
+                {!inBreakdown && r?.source ? (
+                  <>
+                    Olası kaynak: <b className="font-medium text-fg">{sourceLabel(r.source, true)}</b>
+                  </>
+                ) : (
+                  !inBreakdown && r?.factors[0]?.text
+                )}
               </div>
             </button>
           ))}
@@ -224,6 +242,13 @@ export default function Predictive() {
           </Card>
           <Card>
             <CardHeader title="Riski artıran etkenler" subtitle={selR?.r ? `Şu an ${pctRisk(selR.r.risk)} · ${LEVEL_STYLE[selR.r.level].word}` : 'Henüz değerlendirme yok'} />
+            {selR?.r?.source && (
+              <div className="mx-4 mt-3 rounded-lg border bg-wash px-3 py-2.5 text-xs">
+                <div className="font-semibold">Olası kaynak: {sourceLabel(selR.r.source)}</div>
+                <div className="mt-0.5 text-fg-2">{FAILURE_MODES[selR.r.source].signature}</div>
+                <div className="mt-1.5">{FAILURE_MODES[selR.r.source].advice}</div>
+              </div>
+            )}
             <ul className="space-y-3 px-4 pb-4 pt-3">
               {(selR?.r?.factors ?? []).map((f) => (
                 <li key={f.feature}>
@@ -251,12 +276,18 @@ export default function Predictive() {
             <div className="text-right font-medium">{met.failures} arıza</div>
             <div className="text-fg-2">Öngörülebilir arızaları yakalama</div>
             <div className="text-right font-medium">{p0(met.caughtPredictablePct)} ({met.predictableFailures} arızadan)</div>
-            <div className="text-fg-2">Ani arızaları yakalama (sensör/PLC)</div>
-            <div className="text-right font-medium">{p0(met.caughtSuddenPct)} — belirtisi olmadığı için beklenen</div>
+            <div className="text-fg-2">Ani arızalar (kontrol / elektrik, takım kırılması)</div>
+            <div className="text-right font-medium">{p0(met.caughtSuddenPct)} — belirtisiz; denk gelen alarmlar tesadüfi</div>
+            <div className="text-fg-2">Olası kaynağı doğru bulma</div>
+            <div className="text-right font-medium">
+              {M.sourceAccuracy.correct} / {M.sourceAccuracy.checked} yakalanan arızada ({p0(M.sourceAccuracy.checked ? M.sourceAccuracy.correct / M.sourceAccuracy.checked : 0)})
+            </div>
             <div className="text-fg-2">Uyarı süresi (medyan)</div>
             <div className="text-right font-medium">arızadan {dec(met.leadHoursMedian, 0)} saat önce</div>
             <div className="text-fg-2">Boş alarm</div>
-            <div className="text-right font-medium">makine başına haftada {dec(met.falseAlarmsPerMachineWeek)}</div>
+            <div className="text-right font-medium">
+              makine başına haftada {dec(met.falseAlarmsPerMachineWeek)} · alarmların {p0(met.precision)}'i arızaya denk geldi
+            </div>
             <div className="text-fg-2">Lojistik regresyonla karşılaştırma</div>
             <div className="text-right font-medium">lojistik {p0(M.baseline.logisticCaughtPct)} · gradient boosting {p0(M.baseline.boostingCaughtPct)}</div>
           </div>
@@ -279,8 +310,8 @@ export default function Predictive() {
           </div>
           <div className="space-y-2 px-4 pb-4 pt-1 text-xs leading-relaxed text-fg-2">
             <p>
-              Belirleyici olan süre değil, <b className="text-fg">öğrenilecek arıza örneği sayısı</b>. Simülasyonda belirtiler tutarlı olduğu için model birkaç düzine arızayla doyuyor; gerçek fabrikada belirtiler daha karmaşık olduğundan
-              eğri daha yavaş yükselir.
+              Belirleyici olan süre değil, <b className="text-fg">öğrenilecek arıza örneği sayısı</b>. Belirtiler arızadan arızaya farklı şiddette olduğu ve arızaya benzeyen durumlar bulunduğu için model ~80–90 arıza
+              örneğine kadar gelişiyor, sonra yavaşlıyor. Gerçek fabrikada her makine tipinin kendi arıza türleri için yeterli örnek birikmesi gerekir; nadir türler için bu daha uzun sürer.
             </p>
             <ol className="space-y-1">
               <li>
@@ -298,13 +329,60 @@ export default function Predictive() {
       </section>
 
       <Card>
-        <CardHeader title="Bildirim geçmişi" subtitle="Bakım ekibine ve hattın foreman'ine gönderilen uyarılar" />
+        <CardHeader title="Arıza türüne göre başarı" subtitle={`Modelin görmediği son ${M.dataset.testDays} gün · yakalama: arızadan 1 saat – ${HORIZON_TEXT} önce alarm`} />
+        <table className="mt-2 w-full text-xs">
+          <thead className="text-fg-2">
+            <tr className="border-y">
+              <th className="px-4 py-2 text-left font-medium">Arıza türü</th>
+              <th className="px-2 py-2 text-left font-medium">Makine tipi</th>
+              <th className="px-2 py-2 text-left font-medium">Belirti izi (erkenden geçe)</th>
+              <th className="px-2 py-2 text-right font-medium">Arıza</th>
+              <th className="px-2 py-2 text-right font-medium">Yakalanan</th>
+              <th className="px-4 py-2 text-right font-medium">Uyarı süresi (medyan)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {modeRows.map((b) => {
+              const fm = FAILURE_MODES[b.mode as ModeId]
+              return (
+                <tr key={b.mode} className="border-b">
+                  <td className="px-4 py-2 font-medium">{fm.label}</td>
+                  <td className="px-2 text-fg-2">{typesOf(fm.id)}</td>
+                  <td className="px-2 text-fg-2">{fm.signature}</td>
+                  <td className="tnum px-2 text-right">{b.failures}</td>
+                  <td className="tnum px-2 text-right font-medium">
+                    {b.caught} <span className="font-normal text-fg-3">({p0(b.failures ? b.caught / b.failures : 0)})</span>
+                  </td>
+                  <td className="tnum px-4 text-right">{b.caught ? `${dec(b.leadHoursMedian, 0)} sa` : '—'}</td>
+                </tr>
+              )
+            })}
+            {sudden && (
+              <tr>
+                <td className="px-4 py-2 font-medium">Ani arıza</td>
+                <td className="px-2 text-fg-2">Hepsi</td>
+                <td className="px-2 text-fg-2">Belirti yok (kontrol / elektrik, takım kırılması)</td>
+                <td className="tnum px-2 text-right">{sudden.failures}</td>
+                <td className="tnum px-2 text-right text-fg-2">
+                  {sudden.caught} <span className="text-fg-3">(tesadüfi)</span>
+                </td>
+                <td className="px-4 text-right text-fg-3">—</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+        <p className="px-4 pb-3 pt-2 text-[11px] text-fg-3">Test dönemindeki arıza sayıları küçük olduğundan tür bazındaki oranlar oynaktır; gerçek veride düzenli yeniden eğitimle izlenir.</p>
+      </Card>
+
+      <Card>
+        <CardHeader title="Bildirim geçmişi" subtitle="Bakım ekibine ve hücrenin foreman'ine gönderilen uyarılar" />
         <table className="mt-2 w-full text-xs">
           <thead className="text-fg-2">
             <tr className="border-y">
               <th className="px-4 py-2 text-left font-medium">Zaman</th>
               <th className="px-2 py-2 text-left font-medium">Makine</th>
               <th className="px-2 py-2 text-right font-medium">Risk</th>
+              <th className="px-2 py-2 text-left font-medium">Olası kaynak</th>
               <th className="px-2 py-2 text-left font-medium">Neden</th>
               <th className="px-2 py-2 text-left font-medium">Durum</th>
               <th className="px-4 py-2 text-left font-medium">Sonuç</th>
@@ -313,7 +391,7 @@ export default function Predictive() {
           <tbody>
             {notes.length === 0 && (
               <tr>
-                <td colSpan={6} className="px-4 py-6 text-center text-fg-2">
+                <td colSpan={7} className="px-4 py-6 text-center text-fg-2">
                   Henüz bildirim yok
                 </td>
               </tr>
@@ -327,6 +405,7 @@ export default function Predictive() {
                   {MACHINE_BY_ID[n.machineId]?.code} <span className="font-normal text-fg-3">{LINE_BY_ID[n.lineId]?.short}</span>
                 </td>
                 <td className="tnum px-2 text-right">{pctRisk(n.risk)}</td>
+                <td className="px-2">{sourceLabel(n.source) ?? <span className="text-fg-3">belirlenemedi</span>}</td>
                 <td className="max-w-[360px] truncate px-2 text-fg-2" title={n.factors.map((f) => f.text).join(' · ')}>
                   {n.factors[0]?.text ?? '—'}
                 </td>
@@ -337,7 +416,7 @@ export default function Predictive() {
                       <CheckCircle2 className="size-3.5" /> {dec((n.failureAt - n.t) / HOUR)} sa sonra arıza oldu
                     </span>
                   ) : now - n.t > M.horizonHours * HOUR ? (
-                    <span className="text-fg-3">24 saatte arıza olmadı</span>
+                    <span className="text-fg-3">{HORIZON_TEXT} içinde arıza olmadı</span>
                   ) : (
                     <span className="text-fg-2">bekleniyor</span>
                   )}

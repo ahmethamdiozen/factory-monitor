@@ -9,9 +9,9 @@ import { SQL_STATUS } from './rows'
 
 const base: RuleInput = {
   speedAvg: 0.8,
-  temperatureC: 42,
+  tempDevC: 2,
   feedPct: 100,
-  vibrationMmS: 1.9,
+  vibRatio: 1,
   toolRatio: 0.1,
   msSinceRestart: null,
   msSinceLotChange: null,
@@ -20,10 +20,12 @@ const base: RuleInput = {
 
 describe('kural motoru', () => {
   it('hız normalse neden yok', () => expect(inferSlowReason({ ...base, speedAvg: 0.95 })).toBe(RULE.NONE))
-  it('sıcaklık', () => expect(inferSlowReason({ ...base, temperatureC: 58 })).toBe(RULE.TEMP))
+  it('sıcaklık (referansa göre)', () => expect(inferSlowReason({ ...base, tempDevC: 14 })).toBe(RULE.TEMP))
   it('besleme', () => expect(inferSlowReason({ ...base, feedPct: 82 })).toBe(RULE.FEED))
-  it('aşınma', () => expect(inferSlowReason({ ...base, vibrationMmS: 2.9, toolRatio: 0.5 })).toBe(RULE.WEAR))
-  it('ısınma diğerlerinden önce gelir', () => expect(inferSlowReason({ ...base, temperatureC: 58, msSinceRestart: 60_000 })).toBe(RULE.WARMUP))
+  it('aşınma', () => expect(inferSlowReason({ ...base, vibRatio: 1.6, toolRatio: 0.5 })).toBe(RULE.WEAR))
+  it('iş mili rulmanı titreşimi takım aşınması sayılmaz', () => expect(inferSlowReason({ ...base, vibRatio: 1.9, hfRatio: 4, toolRatio: 0.5 })).toBe(RULE.UNKNOWN))
+  it('eksik ölçüm (NaN) kural tetiklemez', () => expect(inferSlowReason({ ...base, tempDevC: NaN, vibRatio: NaN, toolRatio: 0.5 })).toBe(RULE.UNKNOWN))
+  it('ısınma diğerlerinden önce gelir', () => expect(inferSlowReason({ ...base, tempDevC: 14, msSinceRestart: 60_000 })).toBe(RULE.WARMUP))
   it('acemi operatör', () => expect(inferSlowReason({ ...base, operatorExperienceYears: 0.4 })).toBe(RULE.OPERATOR))
   it('yeni lot', () => expect(inferSlowReason({ ...base, msSinceLotChange: 10 * 60_000 })).toBe(RULE.MATERIAL))
   it('açıklanamayan', () => expect(inferSlowReason(base)).toBe(RULE.UNKNOWN))

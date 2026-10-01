@@ -1,5 +1,6 @@
 import { DAY_START_HOUR, DOWNTIME_REASONS, EMPLOYEE_NO, LINES, MACHINES, PEOPLE, SHIFTS } from '@/sim/factoryDef'
 import { toolLifeCycles } from '@/sim/machineSim'
+import { TAGS, tagDefsOf } from '@/sim/tags'
 import { sql } from '../shared/mssql'
 import type { ConnectionPool } from 'mssql'
 
@@ -36,6 +37,12 @@ export async function seedReference(pool: ConnectionPool, now: number): Promise<
         .input('nom', sql.Decimal(12, 4), m.spec.nominal).input('lsl', sql.Decimal(12, 4), m.spec.lsl)
         .input('usl', sql.Decimal(12, 4), m.spec.usl).input('sd', sql.Decimal(12, 4), m.spec.sigma)
         .query('INSERT dbo.Machines VALUES (@id,@code,@name,@model,@line,@type,@pn,@pname,@op,@batch,@cycle,@target,@tool,@ch,@unit,@nom,@lsl,@usl,@sd)')
+      for (const [k, d] of tagDefsOf(m, MACHINES.indexOf(m)).entries()) {
+        const def = TAGS[m.type][k]
+        await q().input('m', m.id).input('tag', d.tag).input('ch', d.channel).input('rel', d.relativeTo ?? null).input('u', def.unit).input('d', def.description)
+          .input('b', sql.Float, Number(d.baseline.toPrecision(4)))
+          .query('INSERT dbo.MachineTags VALUES (@m, @tag, @ch, @rel, @u, @d, @b)')
+      }
       await q().input('wo', m.orderNo).input('m', m.id).input('p', m.product).input('t', m.dailyTarget * 5)
         .query("INSERT dbo.WorkOrders VALUES (@wo, @m, @p, @t, 'Released')")
     }
@@ -82,7 +89,7 @@ export async function ensureAssignments(pool: ConnectionPool, from: number, to: 
 }
 
 /** Şema sürümü: tablo yapısı değişince artırılır → simülatör tabloları düşürüp yeniden kurar */
-export const SCHEMA_VERSION = 2
+export const SCHEMA_VERSION = 3
 
 const ALL_TABLES = [
   'ShiftAssignments', 'WorkOrders', 'MachineEvents', 'ProductionCounters', 'ProcessValues', 'ProcessTags', 'MachineTags',
@@ -110,6 +117,8 @@ export async function wipe(pool: ConnectionPool): Promise<void> {
     IF OBJECT_ID('dbo.MachineEvents') IS NOT NULL TRUNCATE TABLE dbo.MachineEvents;
     IF OBJECT_ID('dbo.ProductionCounters') IS NOT NULL TRUNCATE TABLE dbo.ProductionCounters;
     IF OBJECT_ID('dbo.ProcessValues') IS NOT NULL TRUNCATE TABLE dbo.ProcessValues;
+    IF OBJECT_ID('dbo.ProcessTags') IS NOT NULL TRUNCATE TABLE dbo.ProcessTags;
+    IF OBJECT_ID('dbo.MachineTags') IS NOT NULL DELETE dbo.MachineTags;
     IF OBJECT_ID('dbo.QualitySamples') IS NOT NULL TRUNCATE TABLE dbo.QualitySamples;
     IF OBJECT_ID('dbo.ShiftAssignments') IS NOT NULL TRUNCATE TABLE dbo.ShiftAssignments;
     IF OBJECT_ID('dbo.WorkOrders') IS NOT NULL DELETE dbo.WorkOrders;

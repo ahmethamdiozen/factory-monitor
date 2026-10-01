@@ -44,7 +44,7 @@ function Waiting() {
               API'ye ulaşılamadı, 5 sn'de bir yeniden deneniyor. Veri hattını başlatmak için: <code className="rounded bg-wash px-1">npm run stack</code>
             </>
           ) : (
-            IS_DEMO ? 'Makineler tarayıcıda simüle ediliyor, son 24 saat hazırlanıyor…' : 'SQL Server → Collector → API hattından son 30 saat alınıyor.'
+            IS_DEMO ? 'Makineler tarayıcıda simüle ediliyor, son 48 saat hazırlanıyor…' : 'SQL Server → Collector → API hattından son 48 saat alınıyor.'
           )}
         </p>
         {offline && conn.error && <p className="mt-2 text-xs text-fg-3">{conn.error}</p>}

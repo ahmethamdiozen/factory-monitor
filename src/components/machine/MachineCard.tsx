@@ -5,7 +5,7 @@ import { Sparkline } from '@/components/machine/Sparkline'
 import { StatusBadge, STATE_STYLE } from '@/components/machine/StatusBadge'
 import { Meter } from '@/components/ui/meter'
 import { REASON_BY_ID, SLOW_REASONS } from '@/data/registry'
-import { activeRisk } from '@/data/predictiveView'
+import { activeRisk, sourceLabel } from '@/data/predictiveView'
 import type { MachineLive } from '@/data/snapshot'
 import { dayStartOf, fmtDuration, hoursLabel, num, parts, pct } from '@/lib/kpi'
 import { idealCycleHours } from '@/lib/types'
@@ -68,7 +68,7 @@ export function MachineCard({ live, now }: { live: MachineLive; now: number }) {
         <div className="flex flex-col items-end gap-1">
           <StatusBadge state={live.stateKey} />
           {risk && (
-            <span className="inline-flex items-center gap-1 rounded-full bg-critical/15 px-1.5 py-0.5 text-[11px] font-medium text-critical-text" title={risk.factors.map((f) => f.text).join(' · ')}>
+            <span className="inline-flex items-center gap-1 rounded-full bg-critical/15 px-1.5 py-0.5 text-[11px] font-medium text-critical-text" title={[risk.source ? `Olası kaynak: ${sourceLabel(risk.source)}` : null, ...risk.factors.map((f) => f.text)].filter(Boolean).join(' · ')}>
               <HeartPulse className="size-3" /> Arıza riski %{Math.round(risk.risk * 100)}
             </span>
           )}

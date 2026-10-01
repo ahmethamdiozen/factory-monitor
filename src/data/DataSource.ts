@@ -1,5 +1,6 @@
 import type { MachineSeries, SlowEvent, SpcPoint, StopEvent } from '@/lib/types'
 import type { MaintNotification, NotificationStatus, RiskPoint } from '@/ml/types'
+import type { SignalPoint } from './signals'
 
 /**
  * UI'ın veriye erişim sözleşmesi. Canlı uygulamada ApiDataSource (SQL Server → Collector →
@@ -17,6 +18,8 @@ export interface DataSource {
   slowEvents(): SlowEvent[]
   /** Kalite ölçümleri (alt grup ortalaması + aralık) */
   spc(machineId: string): SpcPoint[]
+  /** Süreç sinyallerinin 5 dk'lık ortalamaları (eski → yeni); veri henüz yoksa boş */
+  signals(machineId: string): SignalPoint[]
   /** Öngörücü bakım: makinenin 5 dk'lık risk noktaları (eski → yeni) */
   riskSeries(machineId: string): RiskPoint[]
   /** Bakım bildirimleri (yeni → eski) */

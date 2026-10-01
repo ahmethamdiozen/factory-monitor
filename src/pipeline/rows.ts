@@ -23,16 +23,21 @@ export interface CounterRow {
   rejectCount: number
 }
 
+/** Tezgâh kontrolörü / MES bağlamı: çevrim süresi, takım sayacı, malzeme partisi */
 export interface ProcessRow {
   machineId: string
   sampleT: number
   cycleTimeMs: number
-  temperatureC: number
-  vibrationMmS: number
-  feedPct: number
   toolCycleCount: number
   materialLot: string
-  motorCurrentA: number
+}
+
+/** Historian etiket okuması (dbo.ProcessTags): bir makine, bir an, bir etiket */
+export interface TagRow {
+  machineId: string
+  sampleT: number
+  tag: string
+  value: number
 }
 
 export interface QualityRow {

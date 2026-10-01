@@ -21,13 +21,19 @@ export async function writeRows(pool: ConnectionPool, rows: RecordedRows): Promi
     t.columns.add('MachineId', sql.VarChar(10), { nullable: false })
     t.columns.add('SampleTimeUtc', sql.DateTime2(3), { nullable: false })
     t.columns.add('CycleTimeMs', sql.Int, { nullable: false })
-    t.columns.add('TemperatureC', sql.Decimal(5, 1), { nullable: false })
-    t.columns.add('VibrationMmS', sql.Decimal(6, 2), { nullable: false })
-    t.columns.add('FeedPct', sql.Decimal(5, 1), { nullable: false })
     t.columns.add('ToolCycleCount', sql.Int, { nullable: false })
     t.columns.add('MaterialLot', sql.VarChar(20), { nullable: false })
-    t.columns.add('MotorCurrentA', sql.Decimal(6, 1), { nullable: true })
-    for (const p of rows.process) t.rows.add(p.machineId, new Date(p.sampleT), p.cycleTimeMs, p.temperatureC, p.vibrationMmS, p.feedPct, p.toolCycleCount, p.materialLot, p.motorCurrentA)
+    for (const p of rows.process) t.rows.add(p.machineId, new Date(p.sampleT), p.cycleTimeMs, p.toolCycleCount, p.materialLot)
+    tables.push(t)
+  }
+  if (rows.tags.length) {
+    const t = new sql.Table('dbo.ProcessTags')
+    t.create = false
+    t.columns.add('MachineId', sql.VarChar(10), { nullable: false })
+    t.columns.add('SampleTimeUtc', sql.DateTime2(3), { nullable: false })
+    t.columns.add('Tag', sql.VarChar(40), { nullable: false })
+    t.columns.add('Value', sql.Float, { nullable: false })
+    for (const g of rows.tags) t.rows.add(g.machineId, new Date(g.sampleT), g.tag, g.value)
     tables.push(t)
   }
   if (rows.quality.length) {

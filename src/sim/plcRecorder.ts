@@ -2,22 +2,24 @@ import { BUCKET_MS } from '@/lib/types'
 import type { Machine } from '@/lib/types'
 import { dayStartOf } from '@/lib/kpi'
 import { sqlStatusFromState } from '@/pipeline/rows'
-import type { CounterRow, EventRow, ProcessRow, QualityRow } from '@/pipeline/rows'
+import type { CounterRow, EventRow, ProcessRow, QualityRow, TagRow } from '@/pipeline/rows'
 import type { RawSample } from './machineSim'
 
 export interface RecordedRows {
   events: EventRow[]
   counters: CounterRow[]
   process: ProcessRow[]
+  tags: TagRow[]
   quality: QualityRow[]
 }
 
-export const emptyRows = (): RecordedRows => ({ events: [], counters: [], process: [], quality: [] })
+export const emptyRows = (): RecordedRows => ({ events: [], counters: [], process: [], tags: [], quality: [] })
 
 /**
  * Bir makinenin PLC'si gibi davranır: ham simülasyon örneklerini SQL satırlarına çevirir.
  * - durum yalnızca değişince olay satırı
  * - sayaçlar kümülatif, üretim günü başında (06:00) sıfırlanır
+ * - sensörler historian'a etiket etiket yazılır (kopuk sensörün satırı yoktur)
  */
 export class PlcRecorder {
   private readonly machine: Machine
@@ -55,17 +57,8 @@ export class PlcRecorder {
     if (s.quality) this.subgroup++
     if (!write) return
     out.counters.push({ machineId: s.machineId, sampleT, totalCount: this.total, rejectCount: this.reject })
-    out.process.push({
-      machineId: s.machineId,
-      sampleT,
-      cycleTimeMs: s.cycleTimeMs,
-      temperatureC: s.temperatureC,
-      vibrationMmS: s.vibrationMmS,
-      feedPct: s.feedPct,
-      toolCycleCount: s.toolCycles,
-      materialLot: s.materialLot,
-      motorCurrentA: s.motorCurrentA,
-    })
+    out.process.push({ machineId: s.machineId, sampleT, cycleTimeMs: s.cycleTimeMs, toolCycleCount: s.toolCycles, materialLot: s.materialLot })
+    for (const tag in s.tags) out.tags.push({ machineId: s.machineId, sampleT, tag, value: s.tags[tag] })
     if (s.quality) {
       const spec = this.machine.spec
       s.quality.forEach((value, k) =>

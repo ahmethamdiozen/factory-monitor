@@ -72,6 +72,16 @@ export interface Machine {
   /** Üretim günü (06:00→06:00) hedefi, parça */
   dailyTarget: number
   spec: SpecLimits
+  /** Süreç sinyali kanalları (dbo.MachineTags'ten): ad, birim, devreye alma referansı */
+  channels?: ChannelInfo[]
+}
+
+export interface ChannelInfo {
+  channel: 'temp' | 'vib' | 'hf' | 'load' | 'cur' | 'aux' | 'feed'
+  label: string
+  unit: string
+  /** Referans (sağlıklı makine); bağıl kanalda 0 */
+  ref: number | null
 }
 
 /** İdeal çevrim süresi (saat) */

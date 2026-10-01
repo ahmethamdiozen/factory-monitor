@@ -3,17 +3,26 @@ import type { Machine, MachineType, StateCode } from '@/lib/types'
 import { between, gaussian, mulberry32 } from '@/lib/rng'
 import type { Rng } from '@/lib/rng'
 import { shiftOf } from './factoryDef'
+import { MODES_OF_TYPE } from '@/lib/failureModes'
+import type { ModeId } from '@/lib/failureModes'
+import { furnaceSetpoint, tagBaselines } from './tags'
+import type { Baseline } from './tags'
 
 /**
- * Tek bir makinenin "fiziksel" simülasyonu. Her 10 sn'lik dilim için bir PLC/SCADA
- * sisteminin kaydedeceği ham sinyalleri üretir. Yavaşlık NEDENİNİ yazmaz; nedenler
+ * Tek bir makinenin "fiziksel" simülasyonu. Her 10 sn'lik dilim için tezgâh kontrolörünün ve
+ * sensörlerin (historian) kaydedeceği ham sinyalleri üretir. Yavaşlık NEDENİNİ yazmaz; nedenler
  * sinyal desenlerine gömülüdür ve analiz katmanı (src/lib/rules.ts) tarafından çıkarılır.
  *
- * Yıpranma fiziği: her makinenin gizli bir yıpranma seviyesi (0→1) vardır. Çalıştıkça artar,
- * motor akımını, titreşimi, mikro duruşları ve çevrim süresi oynaklığını yükseltir; yüksek
- * yıpranma arızaya yol açar. Planlı bakım yıpranmayı azaltır, arıza onarımı sıfırlar.
- * Arızaların bir kısmı (sensör/PLC gibi) belirtisiz "ani" arızadır — hiçbir model bunları
- * önceden göremez. Yıpranma seviyesi SQL'e yazılmaz; öngörücü model onu belirtilerden çıkarır.
+ * Arıza fiziği (P-F eğrisi): makine tipinin her arıza türü (src/lib/failureModes.ts) için ayrı bir
+ * gizli bozulma vardır. Bozulma rastgele bir anda başlar (P noktası), çalıştıkça d = ilerleme^1,5
+ * ile büyür ve kendine özgü belirti izi bırakır (ör. rulmanda önce yüksek frekans titreşim, sonra
+ * RMS titreşim, en son sıcaklık). d > 0,6'dan sonra arıza (F) olasılığı keskin artar. Planlı bakım
+ * ilerlemiş bir bozulmayı ancak bir olasılıkla bulur; onarım sadece o türü sıfırlar. Kontrol /
+ * elektrik arızaları ve takım kırılması belirtisizdir — hiçbir model bunları önceden göremez.
+ *
+ * Sensörler kusursuz değildir: kablosuz titreşim sensörü ara sıra kopar (satır yazılmaz), nadiren
+ * sıçrama yapar; sıcaklıklar gece/gündüz değişir; program değişiminde iş mili yükü kayar.
+ * Bozulma seviyesi SQL'e yazılmaz; öngörücü model onu belirtilerden çıkarır.
  */
 
 const MIN = 60 * 1000
@@ -38,8 +47,8 @@ interface Story {
   wear?: boolean
   rookieInB?: boolean
   forced?: ForcedSegment[]
-  /** Yıpranma hikâyesi: fromH'den failAtH'ye (saat, t0'a göre) yıpranma 0,05→1 yükselir; failAtH'de arıza */
-  degrade?: { fromH: number; failAtH: number }
+  /** Bozulma hikâyesi: fromH'de (t0'a göre saat) başlar, failAtH'de arızaya varır */
+  degrade?: { mode: ModeId; fromH: number; failAtH: number }
 }
 
 /** Demo için bilinçli gömülmüş "hikâyeler" (dakikalar simülatörün başladığı ana, t0'a göre). */
@@ -50,8 +59,8 @@ export const STORIES: Record<string, Story> = {
   M03: { forced: [{ fromMin: -18, toMin: 9, kind: 'stop', state: STATE.CHANGEOVER, reasonId: 4 }] },
   // TAS-01: soğutma sıvısı ısındı
   M04: { forced: [{ fromMin: -50, toMin: 30, kind: 'slow', reasonId: TRUTH.TEMP, factor: 0.84 }] },
-  // FRZ-01: iş mili bozuluyor; ~3 saat sonra arıza (öngörücü bakım önceden uyarır)
-  M05: { degrade: { fromH: -30, failAtH: 3 }, forced: [{ fromMin: 180, toMin: 228, kind: 'stop', state: STATE.STOPPED, reasonId: 1 }] },
+  // FRZ-01: iş mili rulmanı ~4 gündür bozuluyor; ~3 saat sonra arıza (öngörücü bakım önceden uyarır)
+  M05: { degrade: { mode: 'bearing', fromH: -93, failAtH: 3 }, forced: [{ fromMin: 180, toMin: 480, kind: 'stop', state: STATE.STOPPED, reasonId: 13 }] },
   // FRZ-02: planlı bakımda
   M06: { forced: [{ fromMin: -35, toMin: 40, kind: 'stop', state: STATE.MAINTENANCE, reasonId: 8 }] },
   // FRZ-03: titreşim (chatter) yüzünden ilerleme düşürüldü
@@ -60,10 +69,26 @@ export const STORIES: Record<string, Story> = {
   M08: { eff: 0.97, rookieInB: true },
   // FRN-01: yeni şarj bekliyor (önceki operasyonlardan parça gelmedi)
   M09: { forced: [{ fromMin: -22, toMin: 14, kind: 'stop', state: STATE.STOPPED, reasonId: 6 }] },
-  // FRN-02: ~3 saat önceki arızası yıpranma kaynaklıydı; model önceden uyarmıştı
-  M10: { degrade: { fromH: -30, failAtH: -170 / 60 }, forced: [{ fromMin: -170, toMin: -122, kind: 'stop', state: STATE.STOPPED, reasonId: 1 }] },
+  // FRN-02: ~3 saat önce vakum pompası arızalandı; model önceden uyarmıştı
+  M10: { degrade: { mode: 'vacuum', fromH: -110, failAtH: -170 / 60 }, forced: [{ fromMin: -170, toMin: -50, kind: 'stop', state: STATE.STOPPED, reasonId: 17 }] },
   // KPL-01: toz besleme dalgalanıyor
   M11: { forced: [{ fromMin: -40, toMin: 20, kind: 'slow', reasonId: TRUTH.FEED, factor: 0.8 }] },
+}
+
+/** Arıza türlerinin zaman ölçekleri (gün): bozulmanın başlama aralığı ve P-F süresi */
+const MODE_TIMING: Record<ModeId, { onsetDays: [number, number]; pfDays: [number, number] }> = {
+  bearing: { onsetDays: [30, 60], pfDays: [3, 18] },
+  axis: { onsetDays: [40, 80], pfDays: [3, 14] },
+  coolant: { onsetDays: [30, 60], pfDays: [2, 9] },
+  heater: { onsetDays: [30, 60], pfDays: [3, 12] },
+  vacuum: { onsetDays: [30, 60], pfDays: [2, 10] },
+  gun: { onsetDays: [20, 40], pfDays: [2, 8] },
+  feeder: { onsetDays: [25, 50], pfDays: [1, 6] },
+}
+
+/** Belirti şiddeti: her bozulma aynı belirginlikte iz bırakmaz; ~%25'i zayıf izle ilerler */
+function drawSeverity(r: Rng): number {
+  return r() < 0.25 ? between(r, 0.15, 0.4) : between(r, 0.5, 1.3)
 }
 
 /** Makine tipine göre duruş ve üretim profili (aralıklar: ortalama olay aralığı) */
@@ -74,11 +99,13 @@ interface TypeProfile {
   material: { everyH: [number, number]; durMin: [number, number] } | null
   qualityEveryH: number | null
   staffingEveryH: number | null
-  plannedEveryH: [number, number]
-  /** belirtisiz ani arıza nedenleri */
+  /** temizlik / 5S aralığı (saat) */
+  cleanEveryH: [number, number]
+  /** planlı bakım aralığı (gün) */
+  maintEveryDays: [number, number]
+  /** belirtisiz ani arıza nedenleri ve ortalama aralığı (gün) */
   suddenReasons: number[]
-  /** yıpranma kaynaklı arıza nedenleri */
-  degradeReasons: number[]
+  suddenEveryDays: [number, number]
   /** rastgele yavaşlama türleri */
   slowPool: number[]
   /** kalite ölçümü: dakika başı (null = çevrim/şarj sonunda) */
@@ -93,9 +120,10 @@ const PROFILES: Record<MachineType, TypeProfile> = {
     material: { everyH: [16, 30], durMin: [10, 40] },
     qualityEveryH: 20,
     staffingEveryH: 60,
-    plannedEveryH: [24, 44],
+    cleanEveryH: [24, 48],
+    maintEveryDays: [7, 14],
     suddenReasons: [2, 2, 3, 1],
-    degradeReasons: [1, 3],
+    suddenEveryDays: [60, 100],
     slowPool: [TRUTH.MATERIAL, TRUTH.TEMP, TRUTH.FEED],
     spcEveryMin: 30,
     nok: [0.005, 0.02],
@@ -106,9 +134,10 @@ const PROFILES: Record<MachineType, TypeProfile> = {
     material: { everyH: [12, 24], durMin: [10, 30] },
     qualityEveryH: 24,
     staffingEveryH: 60,
-    plannedEveryH: [24, 44],
+    cleanEveryH: [24, 48],
+    maintEveryDays: [7, 14],
     suddenReasons: [2, 1],
-    degradeReasons: [1],
+    suddenEveryDays: [70, 110],
     slowPool: [TRUTH.TEMP, TRUTH.MATERIAL],
     spcEveryMin: 20,
     nok: [0.005, 0.015],
@@ -119,9 +148,10 @@ const PROFILES: Record<MachineType, TypeProfile> = {
     material: null,
     qualityEveryH: null,
     staffingEveryH: null,
-    plannedEveryH: [72, 120],
-    suddenReasons: [2, 1],
-    degradeReasons: [1],
+    cleanEveryH: [96, 160],
+    maintEveryDays: [10, 20],
+    suddenReasons: [2],
+    suddenEveryDays: [70, 110],
     slowPool: [],
     spcEveryMin: null,
     nok: [0.002, 0.008],
@@ -132,9 +162,10 @@ const PROFILES: Record<MachineType, TypeProfile> = {
     material: { everyH: [10, 20], durMin: [10, 30] },
     qualityEveryH: 24,
     staffingEveryH: 60,
-    plannedEveryH: [30, 50],
+    cleanEveryH: [24, 48],
+    maintEveryDays: [7, 14],
     suddenReasons: [2, 1],
-    degradeReasons: [1],
+    suddenEveryDays: [60, 100],
     slowPool: [TRUTH.FEED, TRUTH.TEMP],
     spcEveryMin: 30,
     nok: [0.008, 0.02],
@@ -145,21 +176,19 @@ const PROFILES: Record<MachineType, TypeProfile> = {
     material: { everyH: [3, 6], durMin: [20, 60] },
     qualityEveryH: null,
     staffingEveryH: 80,
-    plannedEveryH: [48, 96],
+    cleanEveryH: [48, 96],
+    maintEveryDays: [14, 28],
     suddenReasons: [2],
-    degradeReasons: [2],
+    suddenEveryDays: [40, 70],
     slowPool: [],
     spcEveryMin: 120,
     nok: [0.002, 0.006],
   },
 }
 
-/** Hat bazında motorun nominal akımı (A) */
-const BASE_CURRENT: Record<string, number> = { L1: 30, L2: 9, L3: 15 }
-
-/** Yıpranmaya bağlı arıza olasılığı (saat başına). 0,55 altında yok, 1'de saatte ~0,5. */
+/** Bozulmaya bağlı arıza olasılığı (saat başına): d 0,6 altında yok, 1'de saatte ~0,8. */
 export function degradationHazardPerHour(d: number): number {
-  return d < 0.55 ? 0 : 0.5 * Math.pow((d - 0.55) / 0.45, 3)
+  return d < 0.6 ? 0 : 0.8 * Math.pow((d - 0.6) / 0.4, 2)
 }
 
 /** Takım ömrü (parça): ~12 saatlik kesme süresi. TRN-02 hikâyesinde kesici uç bu döngüyle değişir. */
@@ -177,44 +206,52 @@ export interface RawSample {
   rejects: number
   /** Ortalama çevrim süresi (ms); makine çalışmıyorsa 0 */
   cycleTimeMs: number
-  temperatureC: number
-  vibrationMmS: number
-  feedPct: number
   toolCycles: number
   materialLot: string
-  /** 15 dk'da bir 5'li kalite ölçümü */
+  /** Ara kalite ölçümü (5'li) */
   quality: number[] | null
-  /** Motor akımı (A); makine dururken boşta akımı */
-  motorCurrentA: number
+  /** Sensör etiketleri (historian); kopuk sensörün etiketi yoktur */
+  tags: Record<string, number>
   /** Sadece doğrulama için: simülatörün uyguladığı baskın yavaşlama nedeni */
   truthSlow: number
-  /** Sadece doğrulama / analiz için: gizli yıpranma seviyesi (SQL'e yazılmaz) */
+  /** Sadece doğrulama / analiz için: en ilerlemiş gizli bozulma (SQL'e yazılmaz) */
   truthDegradation: number
+  /** Sadece analiz için: en ilerlemiş bozulmanın türü */
+  truthMode: ModeId | ''
 }
 
 interface Params {
   eff: number
   baseNok: number
-  mtbfMin: number
+  suddenDays: number
   microMin: number
   changeoverH: number
-  plannedH: number
+  cleanH: number
+  maintDays: number
   materialH: number
   spcBias: number
   spcOffset: number
   spcEvery: number
-  baseTemp: number
-  /** Sıfırdan tam yıpranmaya kaç çalışma günü */
-  degDays: number
-  baseCurrent: number
+}
+
+/** Bir arıza türünün gizli bozulması */
+interface ModeState {
+  id: ModeId
+  active: boolean
+  /** P noktasından bu yana çalışma saati */
+  progH: number
+  pfH: number
+  d: number
+  /** belirti şiddeti (bkz. drawSeverity) */
+  k: number
 }
 
 interface Seg {
   state: Exclude<StateCode, 0>
   reasonId: number
   remaining: number
-  /** Yıpranma kaynaklı arıza mı (onarım yıpranmayı sıfırlar) */
-  deg?: boolean
+  /** Bozulma kaynaklı arıza ise türü (onarım o türü sıfırlar) */
+  mode?: ModeId
 }
 
 interface SlowEp {
@@ -230,6 +267,7 @@ export class MachineSim {
   private readonly story: Story
   private readonly t0: number
   private readonly prof: TypeProfile
+  private readonly base: Baseline
   /** Fırın: içinde bulunulan şarjın ilerlemesi (0→1) */
   private batchProgress = 0
   private seg: Seg | null = null
@@ -243,10 +281,29 @@ export class MachineSim {
   private lastWearAge = 0
   private lotNo = 1
   private started = false
-  /** Yıpranma için ayrı rastgele sayı akışı (mevcut olayların dizisini bozmamak için) */
+  /** Bozulma için ayrı rastgele sayı akışı (olay dizisini bozmamak için) */
   private readonly drng: Rng
-  private deg: number
-  private degStoryDone = false
+  /** Sensör gürültüsü, kopma ve sıçramalar için ayrı akış */
+  private readonly srng: Rng
+  private readonly modes: ModeState[]
+  private storyDone = false
+  private quietEntered = false
+  /** Program değişiminde iş mili yükü kayar (yeni program, yeni kesme koşulları) */
+  private loadShift = 1
+  /** Kablosuz sensör kopukluğu: kalan dilim */
+  private dropout = 0
+  // Arızaya benzeyen ama arıza olmayan durumlar (gerçek hayatta boş alarmların kaynağı)
+  /** Ağır kesim: titreşim geçici olarak yükselir */
+  private heavyCut = 0
+  private heavyAmp = 1
+  /** Soğutma filtresi tıkanması (0→1): basınç düşer; temizlikte açılır */
+  private clog = 0
+  private clogging = false
+  /** Fırın: şarj ağırlığı (ısıtıcı gücü buna bağlı) ve kapı contası kaçağı */
+  private batchMass = 1
+  private sealLeak = 1
+  /** Kaplama: gaz tüpü değişimiyle tabanca gerilimi kayar */
+  private gasShift = 1
 
   constructor(machine: Machine, idx: number, t0: number) {
     this.machine = machine
@@ -254,40 +311,56 @@ export class MachineSim {
     this.rng = mulberry32(1000 + idx * 7919)
     this.story = STORIES[machine.id] ?? {}
     this.prof = PROFILES[machine.type]
+    this.base = tagBaselines(machine, idx)
     const r = this.rng
     const pr = this.prof
     const spcEvery = Math.round(((pr.spcEveryMin ?? 30) * 60) / BUCKET_SEC)
     this.p = {
       eff: this.story.eff ?? between(r, 0.93, 0.985),
       baseNok: between(r, pr.nok[0], pr.nok[1]),
-      mtbfMin: between(r, 420, 900),
+      suddenDays: between(r, pr.suddenEveryDays[0], pr.suddenEveryDays[1]),
       microMin: pr.micro ? between(r, pr.micro.everyMin[0], pr.micro.everyMin[1]) : 0,
       changeoverH: pr.changeover ? between(r, pr.changeover.everyH[0], pr.changeover.everyH[1]) : 0,
-      plannedH: between(r, pr.plannedEveryH[0], pr.plannedEveryH[1]),
+      cleanH: between(r, pr.cleanEveryH[0], pr.cleanEveryH[1]),
+      maintDays: between(r, pr.maintEveryDays[0], pr.maintEveryDays[1]),
       materialH: pr.material ? between(r, pr.material.everyH[0], pr.material.everyH[1]) : 0,
       spcBias: gaussian(r) * 0.15,
       spcOffset: Math.floor(r() * spcEvery),
       spcEvery,
-      baseTemp: 40 + idx * 0.6,
-      degDays: 0,
-      baseCurrent: 0,
     }
-    this.temp = this.p.baseTemp
+    this.temp = this.base.SpindleTempC ?? this.base.CoolingWaterTempC ?? 24
     this.toolCycles = Math.floor(r() * toolLifeCycles(machine) * 0.3)
     this.drng = mulberry32(5000 + idx * 7919)
-    this.p.degDays = between(this.drng, 3, 8)
-    this.p.baseCurrent = (BASE_CURRENT[machine.lineId] ?? 12) * between(this.drng, 0.92, 1.08)
-    this.deg = this.drng() * 0.4
+    this.srng = mulberry32(9000 + idx * 7919)
+    // Başlangıçta bazı bozulmalar zaten sürüyor olabilir (uzun dönem ortalamasıyla tutarlı)
+    this.modes = MODES_OF_TYPE[machine.type].map((id) => {
+      const tm = MODE_TIMING[id]
+      const pfH = between(this.drng, tm.pfDays[0], tm.pfDays[1]) * 24
+      const onsetMean = ((tm.onsetDays[0] + tm.onsetDays[1]) / 2) * 24
+      const active = !this.story.degrade && this.drng() < pfH / (onsetMean + pfH)
+      const progH = active ? this.drng() * pfH * 0.7 : 0
+      return { id, active, progH, pfH, d: active ? Math.pow(progH / pfH, 1.5) : 0, k: drawSeverity(this.drng) }
+    })
   }
 
-  /** Hikâyeli makinede yıpranma rampası etkin mi? */
+  /**
+   * Hikâye penceresi: hikâyeli makinede rampadan 3 gün önce ve arızaya kadar kendiliğinden yeni
+   * bozulma veya bozulma arızası olmaz (senaryo temiz kalsın). Eğitim verisinde hikâye anı
+   * veri döneminin dışında kaldığı için bu makineler de normal davranır.
+   */
+  private storyQuiet(t: number): boolean {
+    const d = this.story.degrade
+    return !!d && t >= this.t0 + (d.fromH - 72) * HOUR && t < this.t0 + d.failAtH * HOUR + HOUR
+  }
+
+  /** Hikâyeli makinede bozulma rampası etkin mi? (0→1) */
   private storyRamp(t: number): number | null {
     const d = this.story.degrade
     if (!d) return null
     const from = this.t0 + d.fromH * HOUR
     const to = this.t0 + d.failAtH * HOUR
     if (t < from || t >= to) return null
-    return 0.05 + 0.95 * ((t - from) / (to - from))
+    return (t - from) / (to - from)
   }
 
   private forcedAt(t: number): ForcedSegment | undefined {
@@ -296,6 +369,25 @@ export class MachineSim {
 
   private get lot(): string {
     return `L${this.machine.id.slice(1)}-${String(this.lotNo).padStart(4, '0')}`
+  }
+
+  private mode(id: ModeId): number {
+    return this.modes.find((m) => m.id === id)?.d ?? 0
+  }
+
+  /** Belirtiye yansıyan bozulma (gerçek bozulma × şiddet) — sinyaller bunu görür, arıza gerçeğini değil */
+  private sym(id: ModeId): number {
+    const m = this.modes.find((x) => x.id === id)
+    return m ? Math.min(1, m.d * m.k) : 0
+  }
+
+  private resetMode(m: ModeState): void {
+    m.active = false
+    m.progH = 0
+    m.d = 0
+    const tm = MODE_TIMING[m.id]
+    m.pfH = between(this.drng, tm.pfDays[0], tm.pfDays[1]) * 24
+    m.k = drawSeverity(this.drng)
   }
 
   private startSeg(t: number): void {
@@ -309,20 +401,26 @@ export class MachineSim {
     const hazard = sh === 'C' ? 1.6 : sh === 'B' ? 1.05 : 1
     const pr = this.prof
     const pickR = (list: number[], rnd: Rng) => list[Math.floor(rnd() * list.length)]
-    // Yıpranma kaynaklı arıza (hikâye rampasındayken arıza zamanı hikâyece belirlenir)
-    if (this.storyRamp(t) === null && this.drng() < (degradationHazardPerHour(this.deg) * BUCKET_SEC) / 3600) {
-      this.seg = { state: STATE.STOPPED, reasonId: pickR(pr.degradeReasons, this.drng), remaining: b(between(this.drng, 40, 120) * 60), deg: true }
-      return
+    // Bozulma kaynaklı arıza (hikâye penceresinde arıza zamanı hikâyece belirlenir)
+    if (!this.storyQuiet(t)) {
+      for (const m of this.modes) {
+        const h = m.progH > 1.25 * m.pfH ? 3 : degradationHazardPerHour(m.d)
+        if (h > 0 && this.drng() < (h * BUCKET_SEC) / 3600) {
+          const reasonId = { bearing: 13, axis: 14, coolant: 15, heater: 16, vacuum: 17, gun: 18, feeder: 19 }[m.id]
+          this.seg = { state: STATE.STOPPED, reasonId, remaining: b(between(this.drng, 2, 6) * 3600), mode: m.id }
+          return
+        }
+      }
     }
     const u = r()
-    // Ani (belirtisiz) arızalar: çoğunlukla kontrol / elektrik
-    let c = per(p.mtbfMin * 60 * 30) * hazard
+    // Ani (belirtisiz) arızalar: kontrol / elektrik, takım kırılması
+    let c = per(p.suddenDays * 86400) * hazard
     if (u < c) {
-      this.seg = { state: STATE.STOPPED, reasonId: pickR(pr.suddenReasons, r), remaining: b(between(r, 20, 90) * 60) }
+      this.seg = { state: STATE.STOPPED, reasonId: pickR(pr.suddenReasons, r), remaining: b(between(r, 20, 120) * 60) }
       return
     }
     if (pr.micro) {
-      c += per(p.microMin * 60) * (1 + 2.5 * this.deg * this.deg)
+      c += per(p.microMin * 60) * (1 + 1.5 * this.sym('axis') ** 2 + 4 * this.sym('feeder') ** 2)
       if (u < c) {
         this.seg = { state: STATE.STOPPED, reasonId: 10, remaining: b(between(r, pr.micro.durSec[0], pr.micro.durSec[1])) }
         return
@@ -337,10 +435,14 @@ export class MachineSim {
       }
     }
     if (!nearNow) {
-      c += per(p.plannedH * 3600)
+      c += per(p.cleanH * 3600)
       if (u < c) {
-        const clean = r() < 0.35
-        this.seg = { state: STATE.MAINTENANCE, reasonId: clean ? 11 : 8, remaining: b((clean ? between(r, 15, 30) : between(r, 45, 120)) * 60) }
+        this.seg = { state: STATE.MAINTENANCE, reasonId: 11, remaining: b(between(r, 15, 30) * 60) }
+        return
+      }
+      c += per(p.maintDays * 86400)
+      if (u < c) {
+        this.seg = { state: STATE.MAINTENANCE, reasonId: 8, remaining: b(between(r, 2, 4) * 3600) }
         return
       }
     }
@@ -364,11 +466,75 @@ export class MachineSim {
     }
   }
 
+  /** Bir segment bittiğinde: onarım, bakım, program değişimi */
+  private endSeg(seg: Seg): void {
+    if (seg.reasonId !== 10) this.warmup = WARMUP_BUCKETS
+    if (seg.reasonId === 4) {
+      // Program değişimi: yeni malzeme partisi; takım da değişir (aşınma hikâyesindeki makinede
+      // takım kendi 12 saatlik döngüsüyle değişir, sayaç ona bağlıdır); iş mili yükü kayar
+      if (!this.story.wear) this.toolCycles = 0
+      this.lotNo++
+      this.loadShift = 1 + Math.max(-0.12, Math.min(0.12, gaussian(this.srng) * 0.06))
+    }
+    if ((seg.reasonId === 11 || seg.reasonId === 8) && this.srng() < 0.8) {
+      this.clog = 0
+      this.clogging = false
+    }
+    if (seg.mode) {
+      const m = this.modes.find((x) => x.id === seg.mode)
+      if (m) this.resetMode(m) // onarım
+    } else if (seg.reasonId === 8) {
+      // Planlı bakım ilerlemiş bir bozulmayı ancak bir olasılıkla bulur
+      for (const m of this.modes) if (m.active && m.d > 0.35 && this.drng() < 0.5) this.resetMode(m)
+    }
+  }
+
+  /** Bozulmaların ilerlemesi (sadece çalışırken) ve hikâye rampası */
+  private advanceModes(t: number, running: boolean): void {
+    const story = this.story.degrade
+    const ramp = this.storyRamp(t)
+    if (this.storyQuiet(t) && !this.quietEntered) {
+      // Hikâye penceresine girerken diğer bozulmalar temizlenir (tek, net bir senaryo)
+      this.quietEntered = true
+      for (const m of this.modes) if (m.id !== story?.mode) this.resetMode(m)
+    }
+    for (const m of this.modes) {
+      if (story && m.id === story.mode) {
+        if (ramp !== null) {
+          m.active = true
+          m.k = 1
+          m.d = Math.pow(ramp, 1.5)
+          m.progH = ramp * m.pfH
+        } else if (!this.storyDone && t >= this.t0 + story.failAtH * HOUR) {
+          this.storyDone = true
+          this.resetMode(m) // hikâyedeki arıza onarıldı
+        }
+        continue
+      }
+      if (!running) continue
+      const hours = BUCKET_SEC / 3600
+      if (!m.active) {
+        const tm = MODE_TIMING[m.id]
+        const onsetH = ((tm.onsetDays[0] + tm.onsetDays[1]) / 2) * 24
+        if (!this.storyQuiet(t) && this.drng() < hours / onsetH) m.active = true
+        continue
+      }
+      m.progH += hours
+      m.d = Math.min(1, Math.pow(m.progH / m.pfH, 1.5))
+    }
+  }
+
   /** Aşınma yaşı (saat): 12 saatte bir takım değişir, t0'da yaş 8 sa. */
   private wearAgeH(t: number): number {
     const since = t - (this.t0 - 8 * HOUR)
     const cycle = 12 * HOUR
     return (((since % cycle) + cycle) % cycle) / HOUR
+  }
+
+  /** Gün içi ortam sıcaklığı farkı (°C): öğleden sonra sıcak, gece serin */
+  private ambient(t: number): number {
+    const h = new Date(t).getHours() + new Date(t).getMinutes() / 60
+    return Math.sin(((h - 9) / 24) * 2 * Math.PI)
   }
 
   /** Dilim indeksi i (seri başından), dilim başlangıcı t. Sırayla çağrılmalı. */
@@ -393,15 +559,7 @@ export class MachineSim {
       if (this.seg) {
         this.seg.remaining -= 1
         if (this.seg.remaining < 0) {
-          if (this.seg.reasonId !== 10) this.warmup = WARMUP_BUCKETS
-          if (this.seg.reasonId === 4) {
-            // Ürün değişimi: yeni hammadde lotu; takım da değişir (aşınma hikâyesindeki makinede
-            // takım kendi 12 saatlik döngüsüyle değişir, sayaç ona bağlıdır)
-            if (!this.story.wear) this.toolCycles = 0
-            this.lotNo++
-          }
-          if (this.seg.deg) this.deg = 0.05 + 0.05 * this.drng() // onarım
-          else if (this.seg.reasonId === 8) this.deg *= 0.6 // planlı bakım yıpranmayı azaltır
+          this.endSeg(this.seg)
           this.seg = null
         }
       }
@@ -413,32 +571,28 @@ export class MachineSim {
     }
     this.started = true
 
-    // Yıpranma: hikâye rampası ya da doğal artış (sadece çalışırken)
-    const ramp = this.storyRamp(t)
-    if (ramp !== null) this.deg = ramp
-    else if (this.story.degrade && !this.degStoryDone && t >= this.t0 + this.story.degrade.failAtH * HOUR) {
-      this.degStoryDone = true
-      this.deg = 0.05 // hikâyedeki arıza onarıldı
-    } else if (state === STATE.RUNNING) {
-      this.deg = Math.min(1, this.deg + Math.max(0, 1 + 0.8 * gaussian(this.drng)) / (this.p.degDays * 8640))
-    }
-    const d = this.deg
+    this.advanceModes(t, state === STATE.RUNNING)
+    let top: ModeState | null = null
+    for (const x of this.modes) if (x.d > (top?.d ?? 0)) top = x
+    const dMax = top?.d ?? 0
 
     // Aşınma hikâyesi: takım yaşı başa sararsa takım değişmiştir
     let wearLoss = 0
     if (this.story.wear) {
       const age = this.wearAgeH(t)
-      // İlk adımda takım sayacı takımın yaşıyla tutarlı başlar; yaş başa sararsa takım değişmiştir
+      // İlk adımda takım sayacı takımın yaşıyla tutarlı başlar
       if (i === 0) this.toolCycles = Math.round(age * m.idealRate * 3600 * 0.9)
       else if (age < this.lastWearAge) this.toolCycles = 0
       this.lastWearAge = age
       wearLoss = 0.1 * Math.pow(age / 8, 1.3)
     }
 
-    const ambient = 26
+    if (this.dropout > 0) this.dropout--
+    else if (this.srng() < BUCKET_SEC / (14 * 86400)) this.dropout = Math.round(between(this.srng, 30, 90) * 6)
+
+    const truth = { truthDegradation: dMax, truthMode: (top?.id ?? '') as ModeId | '' }
     if (state !== STATE.RUNNING) {
       this.slow = null
-      this.temp += (ambient - this.temp) * 0.004
       return {
         machineId: m.id,
         t,
@@ -447,15 +601,12 @@ export class MachineSim {
         produced: 0,
         rejects: 0,
         cycleTimeMs: 0,
-        temperatureC: round(this.temp + gaussian(r) * 0.2, 1),
-        vibrationMmS: round(0.1 + Math.abs(gaussian(r)) * 0.05, 2),
-        feedPct: 0,
         toolCycles: this.toolCycles,
         materialLot: this.lot,
         quality: null,
-        motorCurrentA: round(this.p.baseCurrent * 0.08 + Math.abs(gaussian(this.drng)) * 0.1, 1),
+        tags: this.tags(t, false, { slowCause: 0, slowFactor: 1, wearLoss: 0 }),
         truthSlow: TRUTH.NONE,
-        truthDegradation: d,
+        ...truth,
       }
     }
 
@@ -501,16 +652,18 @@ export class MachineSim {
       [rookieFactor, TRUTH.OPERATOR],
     ]
     let minF = 1
-    let truth = 0
+    let truthSlow = 0
     let prod = 1
     for (const [f, c] of factors) {
       prod *= f
       if (f < minF) {
         minF = f
-        truth = c
+        truthSlow = c
       }
     }
-    const speed = Math.max(0.05, base * prod * (1 - 0.04 * d * d))
+    // Fırında ısıtıcı / vakum bozulması çevrimi uzatır; diğerlerinde bozulma hafif yavaşlatır
+    const degSlow = m.type === 'furnace' ? 1 - 0.15 * this.mode('heater') ** 1.5 - 0.06 * this.mode('vacuum') ** 2 : 1 - 0.04 * dMax * dMax
+    const speed = Math.max(0.05, base * prod * degSlow)
 
     let total: number
     let batchDone = false
@@ -520,6 +673,8 @@ export class MachineSim {
       total = 0
       if (this.batchProgress >= 1) {
         this.batchProgress = 0
+        this.batchMass = between(this.srng, 0.85, 1.15)
+        this.sealLeak = this.srng() < 0.15 ? between(this.srng, 1.5, 3) : 1
         total = m.batchSize
         batchDone = true
         this.seg = { state: STATE.CHANGEOVER, reasonId: 12, remaining: Math.round(between(r, 30, 60) * 6) }
@@ -533,6 +688,7 @@ export class MachineSim {
     let pNok = this.p.baseNok
     pNok += Math.max(0, 0.93 - warmFactor) * 0.2
     pNok += wearLoss * 0.35
+    pNok += 0.02 * this.mode('bearing') ** 2
     if (slowCause === TRUTH.MATERIAL) pNok += 0.02
     if (slowFactor < 0.9) pNok += 0.004
     pNok = Math.min(0.2, pNok)
@@ -541,13 +697,7 @@ export class MachineSim {
     for (let k = 0; k < total; k++) if (r() < pNok) nok++
     this.toolCycles += total
 
-    // Sinyaller
-    const tempTarget = slowCause === TRUTH.TEMP ? 59 : this.p.baseTemp + 3 * d
-    this.temp += (tempTarget - this.temp) * (slowCause === TRUTH.TEMP ? 0.25 : 0.05)
-    const feed = slowCause === TRUTH.FEED ? 100 * slowFactor + gaussian(r) * 2.5 : 100 + gaussian(r) * 1.2
-    const vib = 1.8 + 12 * wearLoss + 0.35 * d * d + Math.abs(gaussian(r)) * 0.15
-    const current = this.p.baseCurrent * (1 + 0.22 * Math.pow(d, 1.5)) * (1 + gaussian(this.drng) * 0.012)
-    const cycleJitter = 1 + gaussian(this.drng) * (0.004 + 0.04 * d * d)
+    const cycleJitter = 1 + gaussian(this.drng) * (0.004 + 0.03 * this.sym('axis') ** 2)
 
     let quality: number[] | null = null
     const spcDue = this.prof.spcEveryMin === null ? batchDone : (i + this.p.spcOffset) % this.p.spcEvery === 0
@@ -566,16 +716,106 @@ export class MachineSim {
       produced: total,
       rejects: nok,
       cycleTimeMs: Math.round((1000 / (m.idealRate * speed)) * cycleJitter),
-      temperatureC: round(this.temp + gaussian(r) * 0.3, 1),
-      vibrationMmS: round(vib, 2),
-      feedPct: round(feed, 1),
       toolCycles: this.toolCycles,
       materialLot: this.lot,
       quality,
-      motorCurrentA: round(current, 1),
-      truthSlow: minF < 0.93 ? truth : TRUTH.NONE,
-      truthDegradation: d,
+      tags: this.tags(t, true, { slowCause, slowFactor, wearLoss }),
+      truthSlow: minF < 0.93 ? truthSlow : TRUTH.NONE,
+      ...truth,
     }
+  }
+
+  /** Makine tipine göre sensör etiketleri */
+  private tags(t: number, running: boolean, x: { slowCause: number; slowFactor: number; wearLoss: number }): Record<string, number> {
+    const g = () => gaussian(this.srng)
+    const B = this.base
+    const amb = this.ambient(t)
+    const out: Record<string, number> = {}
+    const m = this.machine
+    const feedNow = x.slowCause === TRUTH.FEED ? 100 * x.slowFactor + g() * 2.5 : 100 + g() * 1.2
+
+    if (m.type === 'cnc' || m.type === 'grinder') {
+      if (running) {
+        if (this.heavyCut > 0) this.heavyCut--
+        else if (this.srng() < BUCKET_SEC / (5 * 86400)) {
+          this.heavyCut = Math.round(between(this.srng, 1, 4) * 360)
+          this.heavyAmp = between(this.srng, 0.4, 1.1)
+        }
+        if (!this.clogging && this.srng() < BUCKET_SEC / (10 * 86400)) this.clogging = true
+        if (this.clogging) this.clog = Math.min(1, this.clog + BUCKET_SEC / (between(this.srng, 2, 4) * 86400))
+      }
+      const heavy = this.heavyCut > 0 ? this.heavyAmp : 0
+      const dB = this.sym('bearing')
+      const dA = this.sym('axis')
+      const dC = this.sym('coolant')
+      // Sıcaklık: rulman en geç, soğutma arızası belirgin şekilde yükseltir
+      const target = running
+        ? x.slowCause === TRUTH.TEMP
+          ? B.SpindleTempC + 15
+          : B.SpindleTempC + 1.5 * amb + 7 * Math.pow(Math.max(0, (dB - 0.65) / 0.35), 1.5) + 6 * Math.pow(dC, 1.5) + 2.5 * this.clog
+        : B.SpindleTempC - 8 + 1.5 * amb
+      this.temp += (target - this.temp) * (running ? (x.slowCause === TRUTH.TEMP ? 0.25 : 0.05) : 0.004)
+      const feed = running ? feedNow : 0
+      out.SpindleLoadPct = round(running ? B.SpindleLoadPct * this.loadShift * Math.pow(feed / 100, 0.7) * (1 + 0.6 * x.wearLoss) * (1 + g() * 0.03) : 1 + Math.abs(g()) * 0.3, 1)
+      if (this.dropout === 0) {
+        let vib = running
+          ? B.SpindleVibMmS * (1 + 7 * x.wearLoss) * (1 + 0.9 * Math.pow(Math.max(0, (dB - 0.4) / 0.6), 1.3)) * (1 + 0.12 * dA * dA) * (1 + 0.35 * heavy) * (1 + Math.abs(g()) * 0.14)
+          : B.SpindleVibMmS * 0.08 * (1 + Math.abs(g()) * 0.3)
+        let hf = running ? B.SpindleVibHfG * (1 + 3 * Math.pow(dB, 1.2)) * (1 + heavy) * (1 + Math.abs(g()) * 0.18) : B.SpindleVibHfG * 0.15 * (1 + Math.abs(g()) * 0.3)
+        // Kablosuz sensör nadiren sıçrama yapar (darbe, sinyal hatası)
+        if (this.srng() < 1 / 30000) vib *= between(this.srng, 3, 6)
+        if (this.srng() < 1 / 30000) hf *= between(this.srng, 3, 6)
+        out.SpindleVibMmS = round(vib, 3)
+        out.SpindleVibHfG = round(hf, 3)
+      }
+      out.SpindleTempC = round(this.temp + g() * 0.25, 1)
+      out.CoolantPressBar = round(running ? B.CoolantPressBar * (1 - 0.35 * Math.pow(dC, 1.3)) * (1 - 0.18 * this.clog) * (1 + g() * 0.02) : 0, 1)
+      out.FeedOverridePct = round(feed, 1)
+      // Eksen akımı programa (parça ağırlığı, kesme) göre de değişir
+      if (m.type === 'cnc') out.AxisCurrentA = round(running ? B.AxisCurrentA * (1 + 0.28 * Math.pow(dA, 1.5)) * (1 + (this.loadShift - 1) * 0.8) * Math.sqrt(feed / 100) * (1 + g() * 0.02) : B.AxisCurrentA * 0.1, 2)
+    } else if (m.type === 'furnace') {
+      const sp = furnaceSetpoint(m)
+      const dH = this.sym('heater')
+      const dV = this.sym('vacuum')
+      const vacOk = B.VacuumMbar * (1 + 12 * dV * dV) * this.sealLeak
+      let temp = 40
+      let power = 0
+      let vac = 1013 // yükleme / boşaltmada fırın açık
+      if (running) {
+        const p = this.batchProgress
+        if (p < 0.04) {
+          vac = Math.pow(10, -1 + (p / 0.04) * (Math.log10(vacOk) + 1)) // pompalama
+        } else if (p < 0.28) {
+          // ısınma rampası: set değerinin ~20 °C altına kadar tam güç, sonra tutmaya geçilir
+          temp = 40 + (sp - 60) * ((p - 0.04) / 0.24)
+          power = 92 + g() * 1.5
+          vac = vacOk * 1.5 * (1 + g() * 0.05)
+        } else if (p < 0.85) {
+          temp = sp - 3 * dH * dH + g() * 1.2 // tutma (reçete sıcaklığı)
+          power = B.HeaterPowerPct * (1 + 0.45 * Math.pow(dH, 1.3)) * Math.pow(this.batchMass, 0.6) * (1 + g() * 0.025)
+          vac = vacOk * (1 + g() * 0.06)
+        } else {
+          temp = sp - 40 - (sp - 190) * ((p - 0.85) / 0.15) // gazla hızlı soğutma
+          vac = 900
+        }
+      }
+      out.FurnaceTempC = round(temp, 1)
+      out.SetpointC = sp
+      out.VacuumMbar = Number(vac.toPrecision(3))
+      out.HeaterPowerPct = round(Math.max(0, power), 1)
+    } else if (m.type === 'coating') {
+      if (running && this.srng() < BUCKET_SEC / (3 * 86400)) this.gasShift = 1 + gaussian(this.srng) * 0.03
+      const dG = this.sym('gun')
+      const dF = this.sym('feeder')
+      const target = running ? B.CoolingWaterTempC + 3 + amb + (x.slowCause === TRUTH.TEMP ? 12 : 0) : B.CoolingWaterTempC + amb
+      this.temp += (target - this.temp) * 0.05
+      out.GunVoltageV = round(running ? B.GunVoltageV * this.gasShift * (1 - 0.09 * Math.pow(dG, 1.3)) * (1 + g() * (0.008 + 0.03 * dG)) : 0, 1)
+      out.PowderFeedPct = round(running ? (x.slowCause === TRUTH.FEED ? feedNow : 100 + g() * (1 + 7 * Math.pow(dF, 1.5))) : 0, 1)
+      out.CoolingWaterTempC = round(this.temp + g() * 0.2, 1)
+    } else {
+      out.RoomTempC = round(B.RoomTempC + 0.4 * amb + g() * 0.05, 2)
+    }
+    return out
   }
 }
 

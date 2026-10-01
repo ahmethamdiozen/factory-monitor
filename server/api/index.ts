@@ -73,12 +73,27 @@ app.get<{ Querystring: { since?: string } }>('/api/spc', async (req) => {
   return { rows: rows.map((r) => ({ machineId: r.machine_id, t: r.t, mean: r.mean, range: r.range })) }
 })
 
+// Süreç sinyalleri: 5 dk'lık ortalamalar (çalışırken; fırında sadece tutma anı — bkz. src/data/signals.ts)
+const signalStmt = db.prepare(`
+  SELECT (t / 300000) * 300000 AS t,
+    AVG(temp) AS temp, AVG(vib) AS vib, AVG(hf) AS hf, AVG(load) AS load, AVG(cur) AS cur, AVG(aux) AS aux, AVG(feed) AS feed
+  FROM bucket
+  WHERE machine_id = ? AND t >= ? AND state = 0 AND (? = 0 OR ABS(temp) < 15)
+  GROUP BY t / 300000 ORDER BY 1`)
+app.get<{ Querystring: { machine?: string; since?: string } }>('/api/signals', async (req, reply) => {
+  const meta = kvGet<Omit<FactoryMeta, 'datasetId'>>(db, 'meta')
+  const m = meta?.machines.find((x) => x.id === req.query.machine)
+  if (!m) return reply.code(404).send({ error: 'Makine bulunamadı' })
+  const since = Number(req.query.since ?? 0) || Date.now() - 48 * HOUR
+  return { points: signalStmt.all(m.id, since, m.type === 'furnace' ? 1 : 0) }
+})
+
 // ---------- Öngörücü bakım ----------
-const riskStmt = db.prepare('SELECT machine_id, t, risk, level, factors FROM risk WHERE t >= ? ORDER BY t')
+const riskStmt = db.prepare('SELECT machine_id, t, risk, level, factors, source FROM risk WHERE t >= ? ORDER BY t')
 app.get<{ Querystring: { since?: string } }>('/api/risk', async (req) => {
   const since = Number(req.query.since ?? 0) || Date.now() - 50 * HOUR
-  const rows = riskStmt.all(since) as { machine_id: string; t: number; risk: number; level: string; factors: string }[]
-  return { points: rows.map((r) => ({ machineId: r.machine_id, t: r.t, risk: r.risk, level: r.level, factors: JSON.parse(r.factors) })) }
+  const rows = riskStmt.all(since) as { machine_id: string; t: number; risk: number; level: string; factors: string; source: string | null }[]
+  return { points: rows.map((r) => ({ machineId: r.machine_id, t: r.t, risk: r.risk, level: r.level, factors: JSON.parse(r.factors), source: r.source })) }
 })
 
 const notifStmt = db.prepare('SELECT * FROM notification WHERE t >= ? ORDER BY t DESC')
@@ -95,6 +110,7 @@ app.get('/api/notifications', async () => {
       recipients: JSON.parse(r.recipients as string),
       risk: r.risk,
       factors: JSON.parse(r.factors as string),
+      source: r.source ?? null,
       status: r.status,
       statusAt: r.status_at,
       failureAt: r.failure_at,

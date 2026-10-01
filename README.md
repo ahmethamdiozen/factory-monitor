@@ -101,31 +101,33 @@ Backend koparsa ekranlar **eldeki son veriyi göstermeye devam eder**, sağ üst
 ## Veri hattı
 
 ### 1. Simülatör (`server/simulator/`) — fabrika tarafı
-12 makineyi gerçek saatle simüle eder, PLC/SCADA'nın yazacağı satırları SQL Server'a yazar. Makine tipine göre davranır (tezgâh, taşlama, fırın şarjı, kaplama, CMM). **Yavaşlık nedenini yazmaz**; sadece sinyal üretir (sıcaklık, titreşim, ilerleme / besleme %, takım çevrim sayısı, malzeme partisi, çevrim süresi, motor akımı). Demo için gömülü hikâyeler başlangıç anına göre kurgulanır: FRZ-01 iş mili yıpranıyor (yapay zekâ ~3 saat sonraki arızayı önceden haber verir), FRN-02'nin birkaç saat önceki arızası önceden uyarılmıştı, TRN-02 takım aşınması (SPC alarmı), TAS-01 soğutma sıvısı sıcak, FRZ-03 titreşim nedeniyle ilerleme düşürüldü, KPL-01 toz besleme dalgalanması, FRN-01 parça bekliyor, FRZ-02 planlı bakım, TRN-03 program / fikstür değişimi, FRZ-04'te B vardiyasında yeni operatör.
+12 makineyi gerçek saatle simüle eder, PLC/SCADA'nın yazacağı satırları SQL Server'a yazar. Makine tipine göre davranır (tezgâh, taşlama, fırın şarjı, kaplama, CMM). **Yavaşlık nedenini yazmaz**; sadece sinyal üretir (makine tipine göre sensör etiketleri, takım çevrim sayısı, malzeme partisi, çevrim süresi). Demo için gömülü hikâyeler başlangıç anına göre kurgulanır: FRZ-01'in iş mili rulmanı ~4 gündür bozuluyor (yapay zekâ ~3 saat sonraki arızayı ve kaynağını önceden haber verir), FRN-02'nin ~3 saat önceki vakum pompası arızası önceden uyarılmıştı, TRN-02 takım aşınması (SPC alarmı), TAS-01 soğutma sıvısı sıcak, FRZ-03 titreşim nedeniyle ilerleme düşürüldü, KPL-01 toz besleme dalgalanması, FRN-01 parça bekliyor, FRZ-02 planlı bakım, TRN-03 program / fikstür değişimi, FRZ-04'te B vardiyasında yeni operatör.
 
 - `npm run sim` kaldığı yerden devam eder (aradaki boşluğu doldurur)
 - `npm run sim:reset` her şeyi silip son 48 saati yeniden üretir (sunumdan hemen önce önerilir)
 - Şema sürümü (`dbo.SchemaInfo`) değişmişse simülatör tabloları kendiliğinden yeniden kurar; collector da bunu görüp SQLite'ı sıfırdan doldurur
 
 ### 2. SQL Server (`server/sql/schema.sql`) — bize verilecek olan
-`Machines` (makine tipi, parça numarası, operasyon, şarj büyüklüğü, ideal çevrim), `Lines` (hücreler), `DowntimeReasons`, `Employees`, `ShiftDefinitions`, `ShiftAssignments`, `WorkOrders` (referans) ve `MachineEvents` (sadece durum değişince), `ProductionCounters` (10 sn'de bir **kümülatif** sayaç, 06:00'da sıfırlanır), `ProcessValues`, `QualitySamples` (ölçüm). Zamanlar UTC, tablolar sadece ekleme.
+`Machines` (makine tipi, parça numarası, operasyon, şarj büyüklüğü, ideal çevrim), `Lines` (hücreler), `DowntimeReasons`, `Employees`, `ShiftDefinitions`, `ShiftAssignments`, `WorkOrders` (referans) ve `MachineEvents` (sadece durum değişince), `ProductionCounters` (10 sn'de bir **kümülatif** sayaç, 06:00'da sıfırlanır), `ProcessValues` (çevrim süresi, takım sayacı, malzeme partisi), `ProcessTags` (historian: sensör etiketleri) ve `MachineTags` (etiket sözlüğü + devreye alma referansı), `QualitySamples` (ölçüm). Zamanlar UTC, tablolar sadece ekleme.
 
 ### 3. Collector (`server/collector/`) — anlamlandırma
 5 sn'de bir sadece yeni satırları (`Id > son okunan`) salt-okur çeker ve `src/pipeline/transform.ts` ile dönüştürür:
-kümülatif sayaç → tamamlanan uygun / uygunsuz parçalar · olaylar → dilim durumu + duruş kayıtları · çevrim süresi → ilerleme hızı % · sinyaller + **kural motoru** (`src/lib/rules.ts`) → yavaşlık nedeni · ölçümler → SPC alt grupları. Sonuç `data/factory.db` (SQLite) dosyasına yazılır. Yeniden başlarsa kaldığı yerden devam eder; SQL Server sıfırlanırsa kendini yeniden kurar.
+kümülatif sayaç → tamamlanan uygun / uygunsuz parçalar · historian etiketleri → ortak kanallar (referansa göre) · olaylar → dilim durumu + duruş kayıtları · çevrim süresi → ilerleme hızı % · sinyaller + **kural motoru** (`src/lib/rules.ts`) → yavaşlık nedeni · ölçümler → SPC alt grupları. Sonuç `data/factory.db` (SQLite) dosyasına yazılır. Yeniden başlarsa kaldığı yerden devam eder; SQL Server sıfırlanırsa kendini yeniden kurar.
 
 ### 4. API (`server/api/`, port 3001)
 `/api/meta`, `/api/series`, `/api/events`, `/api/spc` (SQLite'tan), `/api/health`, `/api/sql/tables`, `/api/sql/table/:ad` (SQL Server'dan, salt-okur, beyaz listeli). Vite geliştirme sunucusu `/api` isteklerini buraya yönlendirir.
 
 ## Öngörücü bakım (yapay zekâ ile arıza tahmini)
 
-**Soru:** "Bu makinede önümüzdeki 24 saatte arıza olacak mı?" **Model karar verir, mesajı şablon yazar** (ileride küçük dil modeli bağlanacak; sadece `src/ml/notify.ts` içindeki `composeMessage()` değişir).
+**Soru:** "Bu makinede önümüzdeki 3 gün (72 saat) içinde arıza olacak mı, olacaksa olası kaynağı ne?" **Model karar verir, mesajı şablon yazar** (ileride küçük dil modeli bağlanacak; sadece `src/ml/notify.ts` içindeki `composeMessage()` değişir).
 
-- **Belirtiler:** simülatörde her makinenin gizli bir yıpranma seviyesi vardır. Yıpranma motor akımını (`ProcessValues.MotorCurrentA`), titreşimi, mikro duruş sıklığını ve çevrim süresi düzensizliğini artırır, sonunda arızaya yol açar. Arızaların bir kısmı (sensör/PLC) ani ve belirtisizdir; bunları hiçbir model önceden göremez.
-- **Özellikler:** `src/ml/features.ts` son 1–24 saatin eğilimlerini çıkarır. Eğitimde ve canlıda **aynı kod** çalışır.
+- **Sinyaller (historian):** sensörler `dbo.ProcessTags` tablosuna etiket etiket yazılır (makine tipine göre 1–7 etiket: iş mili yükü, RMS titreşim, rulman zarf titreşimi, yatak sıcaklığı, soğutma basıncı, eksen servo akımı; fırında sıcaklık / set değeri / vakum / ısıtıcı gücü; kaplamada tabanca gerilimi / toz besleme / soğutma suyu). `dbo.MachineTags` etiketleri ortak kanallara eşler ve **devreye alma referansını** tutar; kurallar ve model değerleri bu referansa göre (oran / fark) yorumlar.
+- **Arıza fiziği (simülasyon):** her makine tipinin kendi arıza türleri vardır (CNC: iş mili rulmanı, eksen / vidalı mil, soğutma; fırın: ısıtıcı eleman, vakum pompası; kaplama: tabanca / elektrot, toz besleyici). Bozulma rastgele başlar, P-F eğrisiyle ilerler ve kendine özgü iz bırakır (rulmanda önce yüksek frekans titreşim, sonra RMS titreşim, en son sıcaklık). Belirti şiddeti arızadan arızaya değişir; arızaya benzeyen durumlar (ağır kesim, filtre tıkanması, şarj ağırlığı, kapı contası kaçağı, gaz tüpü değişimi) ve kablosuz sensör kopmaları vardır. Kontrol / elektrik arızaları ve takım kırılması belirtisizdir; bunları hiçbir model önceden göremez.
+- **Özellikler:** `src/ml/features.ts` her kanalın referansa oranını ve 24 saatlik eğilimini, kısa duruşları, çevrim düzensizliğini ve makine tipini çıkarır; eksik ölçümler atlanır. Eğitimde ve canlıda **aynı kod** çalışır.
+- **Olası kaynak:** riski artıran sinyaller hangi arıza türünün iziyle örtüşüyorsa o tür ve bakım önerisi bildirimde gösterilir (`src/ml/predict.ts`, `src/lib/failureModes.ts`).
 - **Model:** Python'da (scikit-learn, Gradient Boosting) eğitilir, ağaçlar `src/ml/modelData.ts`'e aktarılır ve TypeScript'te çalışır: tam sürümde collector'da (5 dk'da bir → SQLite `risk`, `notification`), web demosunda tarayıcıda. TS tahminlerinin Python'la aynı olduğu testle doğrulanır.
-- **Sonuç (simüle 180 gün, modelin görmediği son 30 günde):** öngörülebilir arızaların ~%86'sı ortalama ~16 saat önceden yakalanır; makine başına haftada ~0,6 boş alarm. Değerler `ml:train` çıktısında ve uygulamadaki **Öngörücü Bakım** sayfasındadır.
-- **Ne kadar veri gerekir?** Belirleyici olan süre değil, arıza örneği sayısıdır (~50–100). Sayfadaki öğrenme eğrisi bunu gösterir; simülasyonda belirtiler basit olduğu için eğri erken düzleşir, gerçek veride daha yavaş yükselir.
+- **Sonuç (simüle 365 gün, modelin görmediği son 90 günde):** öngörülebilir arızaların ~%77'si ortalama ~2 gün önceden yakalanır; makine başına haftada ~0,5 boş alarm (alarmların ~yarısı gerçek arızaya denk gelir); olası kaynak yakalanan arızaların ~%83'ünde doğru. Değerler `ml:train` çıktısında ve uygulamadaki **Öngörücü Bakım** sayfasındadır (arıza türüne göre tablo dahil). Bunlar simülasyon sonuçlarıdır; gerçek veride model aynı yöntemle yeniden eğitilir.
+- **Ne kadar veri gerekir?** Belirleyici olan süre değil, arıza örneği sayısıdır. Sayfadaki öğrenme eğrisi: 1 aylık veriyle ~%42, ~90 arıza örneğiyle ~%73'e çıkar, sonra yavaşlar.
 
 Modeli yeniden eğitmek (isteğe bağlı; eğitilmiş model repoda hazır, uygulama için Python gerekmez):
 ```bash
@@ -133,8 +135,8 @@ Modeli yeniden eğitmek (isteğe bağlı; eğitilmiş model repoda hazır, uygul
 python3 -m venv ml/.venv            # Windows: py -m venv ml\.venv
 ml/.venv/bin/pip install -r ml/requirements.txt   # Windows: ml\.venv\Scripts\pip install -r ml\requirements.txt
 
-npm run ml:dataset   # simülatörden 180 günlük eğitim verisi (~30 sn) → data/ml/dataset.csv
-npm run ml:train     # eğitim + değerlendirme (~1 dk) → src/ml/modelData.ts
+npm run ml:dataset   # simülatörden 365 günlük eğitim verisi (~1,5 dk) → data/ml/dataset.csv
+npm run ml:train     # eğitim + değerlendirme (~5 dk) → src/ml/modelData.ts
 ```
 Ayrıntılar: [`ml/README.md`](ml/README.md).
 

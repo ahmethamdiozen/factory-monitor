@@ -7,7 +7,13 @@ import { PredictiveSession } from '@/ml/session'
 import { MachineSim, toolLifeCycles } from '@/sim/machineSim'
 import { PlcRecorder, emptyRows } from '@/sim/plcRecorder'
 import { MachineTransformer, emptyOutput } from './transform'
-import type { TransformOutput } from './transform'
+import type { MachineInfo, TransformOutput } from './transform'
+import type { TagRow } from './rows'
+import type { Machine } from '@/lib/types'
+import type { NotifyMachine } from '@/ml/notify'
+import { channelBaselines, tagDefsOf } from '@/sim/tags'
+import { SignalAggregator } from '@/data/signals'
+import type { SignalPoint } from '@/data/signals'
 
 /**
  * SQL Server olmadan tüm hattı bellekte çalıştırır: simülatör → PLC satırları → dönüştürücü.
@@ -25,19 +31,49 @@ export function experienceFromDefs(machineId: string, t: number): number | null 
   return p ? p.experienceYears : null
 }
 
+/** Statik tanımdan dönüştürücü bilgisi (gerçekte collector bunu SQL Server'daki referans tablolarından kurar) */
+export function machineInfoOf(m: Machine, idx: number): MachineInfo {
+  const tags = tagDefsOf(m, idx)
+  return { id: m.id, type: m.type, idealCycleMs: 1000 / m.idealRate, toolLife: toolLifeCycles(m), tags, ref: channelBaselines(tags) }
+}
+
+export function notifyMachinesFromDefs(): NotifyMachine[] {
+  return MACHINES.map((m, idx) => ({
+    id: m.id,
+    code: m.code,
+    name: m.name,
+    lineId: m.lineId,
+    lineShort: LINES.find((l) => l.id === m.lineId)!.short,
+    type: m.type,
+    ref: machineInfoOf(m, idx).ref!,
+  }))
+}
+
+/** Etiket satırlarını okuma anına göre gruplar */
+export function tagsBySample(rows: TagRow[]): Map<number, TagRow[]> {
+  const out = new Map<number, TagRow[]>()
+  for (const r of rows) {
+    const list = out.get(r.sampleT)
+    if (list) list.push(r)
+    else out.set(r.sampleT, [r])
+  }
+  return out
+}
+
 export function runLocalPipeline(startT: number, endT: number, t0: number): LocalPipelineResult {
   const n = Math.round((endT - startT) / BUCKET_MS)
   const out = emptyOutput()
   const truth = new Map<string, Uint8Array>()
   const series = new Map<string, MachineSeries>()
   const spc = new Map<string, SpcPoint[]>()
+  const signals = new Map<string, SignalPoint[]>()
 
-  const predictive = new PredictiveSession(MACHINES.map((m) => ({ id: m.id, code: m.code, name: m.name, lineId: m.lineId, lineShort: LINES.find((l) => l.id === m.lineId)!.short })))
+  const predictive = new PredictiveSession(notifyMachinesFromDefs())
   const allBuckets: TransformOutput['buckets'] = []
   MACHINES.forEach((m, idx) => {
     const sim = new MachineSim(m, idx, t0)
     const rec = new PlcRecorder(m)
-    const tr = new MachineTransformer({ id: m.id, type: m.type, idealCycleMs: 1000 / m.idealRate, toolLife: toolLifeCycles(m) }, { experienceAt: experienceFromDefs })
+    const tr = new MachineTransformer(machineInfoOf(m, idx), { experienceAt: experienceFromDefs })
     const rows = emptyRows()
     const tv = new Uint8Array(n)
     for (let i = 0; i < n; i++) {
@@ -49,8 +85,12 @@ export function runLocalPipeline(startT: number, endT: number, t0: number): Loca
     const mo = emptyOutput()
     rows.events.forEach((e) => tr.addEvent(e))
     const pv = new Map(rows.process.map((p) => [p.sampleT, p]))
-    rows.counters.forEach((c) => tr.addCounter(c, pv.get(c.sampleT), mo))
+    const tags = tagsBySample(rows.tags)
+    rows.counters.forEach((c) => tr.addCounter(c, pv.get(c.sampleT), mo, tags.get(c.sampleT)))
     rows.quality.forEach((q) => tr.addQuality(q, mo))
+    const agg = new SignalAggregator(m.type, endT - startT)
+    for (const b of mo.buckets) agg.add(b)
+    signals.set(m.id, agg.list())
     out.buckets.push(...mo.buckets)
     allBuckets.push(...mo.buckets)
     out.stops.push(...mo.stops)
@@ -80,6 +120,7 @@ export function runLocalPipeline(startT: number, endT: number, t0: number): Loca
     stopEvents: () => stops,
     slowEvents: () => slows,
     spc: (mid) => spc.get(mid) ?? [],
+    signals: (mid) => signals.get(mid) ?? [],
     riskSeries: (mid) => predictive.riskSeries(mid),
     notifications: () => predictive.notifications(),
     setNotificationStatus: (id, st) => predictive.setStatus(id, st, startT + n * BUCKET_MS),

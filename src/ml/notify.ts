@@ -1,5 +1,8 @@
 import { MODEL_DATA } from './modelData'
 import type { MaintNotification, RiskFactor, RiskPoint } from './types'
+import { FAILURE_MODES } from '@/lib/failureModes'
+import type { ModeId } from '@/lib/failureModes'
+import type { RiskMachine } from './riskEngine'
 
 /**
  * Bildirim kuralları. KARAR modeldedir; bu dosya sadece ne zaman ve kime haber verileceğini
@@ -11,19 +14,23 @@ const HOUR = 3600 * 1000
 /** Risk bu kadar süre "Dikkat" eşiğinin altında kalırsa olay kapanır, yeni bildirim açılabilir */
 const QUIET_MS = 60 * 60 * 1000
 
-export interface NotifyMachine {
-  id: string
+export interface NotifyMachine extends RiskMachine {
   code: string
   name: string
   lineId: string
   lineShort: string
 }
 
-export function composeMessage(m: NotifyMachine, risk: number, factors: RiskFactor[], horizonHours: number): { title: string; message: string } {
+export function composeMessage(m: NotifyMachine, risk: number, factors: RiskFactor[], source: ModeId | null | undefined, horizonHours: number): { title: string; message: string } {
   const why = factors.length ? factors.map((f) => f.text.charAt(0).toLowerCase() + f.text.slice(1)).join('; ') : 'birden fazla sinyal normalin dışında'
+  const fm = source ? FAILURE_MODES[source] : null
+  const days = horizonHours % 24 === 0 ? `${horizonHours / 24} gün` : `${horizonHours} saat`
   return {
-    title: `${m.code} · Arıza riski yüksek (%${Math.round(risk * 100)})`,
-    message: `${m.name} önümüzdeki ${horizonHours} saat içinde arızalanabilir. Neden: ${why}. Öneri: bakım ekibi bu vardiya içinde kontrol etsin; ${m.lineShort} foreman'i üretim planını buna göre ayarlasın.`,
+    title: `${m.code} · Arıza riski yüksek (%${Math.round(risk * 100)})${fm ? ` · olası kaynak: ${fm.label.toLocaleLowerCase('tr-TR')}` : ''}`,
+    message:
+      `${m.name} önümüzdeki ${days} içinde arızalanabilir. Neden: ${why}.` +
+      (fm ? ` Olası kaynak: ${fm.label.toLocaleLowerCase('tr-TR')}. Öneri: ${fm.advice}` : ' Öneri: bakım ekibi makineyi kontrol etsin.') +
+      ` ${m.lineShort} foreman'i üretim planını buna göre ayarlasın.`,
   }
 }
 
@@ -54,7 +61,7 @@ export class Notifier {
       return null
     }
     if (p.level !== 'alarm') return null
-    const { title, message } = composeMessage(m, p.risk, p.factors, MODEL_DATA.horizonHours)
+    const { title, message } = composeMessage(m, p.risk, p.factors, p.source, MODEL_DATA.horizonHours)
     const n: MaintNotification = {
       id: `${p.machineId}-${p.t}`,
       t: p.t,
@@ -65,6 +72,7 @@ export class Notifier {
       recipients: ['bakim', `foreman:${m.lineId}`],
       risk: p.risk,
       factors: p.factors,
+      source: p.source ?? null,
       status: 'new',
       statusAt: null,
       failureAt: null,

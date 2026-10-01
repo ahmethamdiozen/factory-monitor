@@ -3,7 +3,10 @@ import { createSeries, putBuckets } from '@/data/series'
 import type { BucketRow } from '@/data/series'
 import { SQL_TABLES } from '@/data/sqlTables'
 import type { SqlTableData, SqlTableInfo } from '@/data/sqlTables'
-import { experienceFromDefs } from '@/pipeline/localPipeline'
+import { experienceFromDefs, machineInfoOf, notifyMachinesFromDefs, tagsBySample } from '@/pipeline/localPipeline'
+import { SignalAggregator } from '@/data/signals'
+import type { SignalPoint } from '@/data/signals'
+import { TAGS, tagDefsOf } from '@/sim/tags'
 import { MachineTransformer, emptyOutput } from '@/pipeline/transform'
 import type { SlowOut, StopOut, TransformOutput } from '@/pipeline/transform'
 import { DAY_START_HOUR, DOWNTIME_REASONS, EMPLOYEE_NO, LINES, MACHINES, PEOPLE, SHIFTS } from '@/sim/factoryDef'
@@ -32,6 +35,7 @@ interface Unit {
   sim: MachineSim
   rec: PlcRecorder
   tr: MachineTransformer
+  signals: SignalAggregator
 }
 
 type RawRow = Record<string, unknown>
@@ -70,13 +74,14 @@ export class DemoDataSource implements LiveSource {
       this.units.set(m.id, {
         sim: new MachineSim(m, idx, this.t0),
         rec: new PlcRecorder(m),
-        tr: new MachineTransformer({ id: m.id, type: m.type, idealCycleMs: 1000 / m.idealRate, toolLife: toolLifeCycles(m) }, { experienceAt: experienceFromDefs }),
+        tr: new MachineTransformer(machineInfoOf(m, idx), { experienceAt: experienceFromDefs }),
+        signals: new SignalAggregator(m.type, HISTORY),
       })
       this.series.set(m.id, createSeries(this.startT, (HISTORY + DAY) / BUCKET_MS))
     })
-    for (const t of ['MachineEvents', 'ProductionCounters', 'ProcessValues', 'QualitySamples']) this.raw[t] = { rows: [], total: 0, lastTime: null }
+    for (const t of ['MachineEvents', 'ProductionCounters', 'ProcessValues', 'ProcessTags', 'QualitySamples']) this.raw[t] = { rows: [], total: 0, lastTime: null }
     this.reference = this.buildReference()
-    this.predictive = new PredictiveSession(MACHINES.map((m) => ({ id: m.id, code: m.code, name: m.name, lineId: m.lineId, lineShort: LINES.find((l) => l.id === m.lineId)!.short })))
+    this.predictive = new PredictiveSession(notifyMachinesFromDefs())
   }
 
   start(): void {
@@ -106,14 +111,17 @@ export class DemoDataSource implements LiveSource {
       for (const [id, u] of this.units) {
         const rows = emptyRows()
         u.rec.record(u.sim.step(this.i, t), rows)
-        this.keepRaw(rows)
+        // Ham satırlar sadece son birkaç dakika için nesneye çevrilir (SQL Veri ekranı son satırları gösterir)
+        this.keepRaw(rows, t > until - 10 * 60 * 1000)
         const mo = emptyOutput()
         for (const e of rows.events) u.tr.addEvent(e)
-        for (const c of rows.counters) u.tr.addCounter(c, rows.process.find((p) => p.sampleT === c.sampleT), mo)
+        const tags = tagsBySample(rows.tags)
+        for (const c of rows.counters) u.tr.addCounter(c, rows.process.find((p) => p.sampleT === c.sampleT), mo, tags.get(c.sampleT))
         for (const q of rows.quality) u.tr.addQuality(q, mo)
         const list = perMachine.get(id) ?? []
         for (const b of mo.buckets) {
           list.push(b)
+          u.signals.add(b)
           this.predictive.add(id, b)
         }
         perMachine.set(id, list)
@@ -162,39 +170,26 @@ export class DemoDataSource implements LiveSource {
 
   // ---------- "SQL Server" tablolarının bellek kopyası (SQL Veri ekranı için) ----------
 
-  private push(table: string, row: RawRow, t: number): void {
+  /** Satır sayacını ilerletir; `row` verilirse son satırlar listesine ekler */
+  private push(table: string, t: number, row?: (id: number) => RawRow): void {
     const r = this.raw[table]
     r.total++
     r.lastTime = t
-    r.rows.push(row)
+    if (!row) return
+    r.rows.push(row(r.total))
     if (r.rows.length > RAW_KEEP * 2) r.rows.splice(0, r.rows.length - RAW_KEEP)
   }
 
-  private keepRaw(rows: RecordedRows): void {
-    for (const e of rows.events) this.push('MachineEvents', { EventId: this.raw.MachineEvents.total + 1, MachineId: e.machineId, EventTimeUtc: iso(e.t), StatusCode: e.status, ReasonCode: e.reasonCode }, e.t)
-    for (const c of rows.counters) this.push('ProductionCounters', { Id: this.raw.ProductionCounters.total + 1, MachineId: c.machineId, SampleTimeUtc: iso(c.sampleT), TotalCount: c.totalCount, RejectCount: c.rejectCount }, c.sampleT)
+  private keepRaw(rows: RecordedRows, materialize: boolean): void {
+    const m = materialize
+    for (const e of rows.events) this.push('MachineEvents', e.t, (id) => ({ EventId: id, MachineId: e.machineId, EventTimeUtc: iso(e.t), StatusCode: e.status, ReasonCode: e.reasonCode }))
+    for (const c of rows.counters) this.push('ProductionCounters', c.sampleT, m ? (id) => ({ Id: id, MachineId: c.machineId, SampleTimeUtc: iso(c.sampleT), TotalCount: c.totalCount, RejectCount: c.rejectCount }) : undefined)
     for (const p of rows.process)
-      this.push(
-        'ProcessValues',
-        {
-          Id: this.raw.ProcessValues.total + 1,
-          MachineId: p.machineId,
-          SampleTimeUtc: iso(p.sampleT),
-          CycleTimeMs: p.cycleTimeMs,
-          TemperatureC: p.temperatureC,
-          VibrationMmS: p.vibrationMmS,
-          FeedPct: p.feedPct,
-          ToolCycleCount: p.toolCycleCount,
-          MaterialLot: p.materialLot,
-          MotorCurrentA: p.motorCurrentA,
-        },
-        p.sampleT,
-      )
+      this.push('ProcessValues', p.sampleT, m ? (id) => ({ Id: id, MachineId: p.machineId, SampleTimeUtc: iso(p.sampleT), CycleTimeMs: p.cycleTimeMs, ToolCycleCount: p.toolCycleCount, MaterialLot: p.materialLot }) : undefined)
+    for (const g of rows.tags) this.push('ProcessTags', g.sampleT, m ? (id) => ({ Id: id, MachineId: g.machineId, SampleTimeUtc: iso(g.sampleT), Tag: g.tag, Value: g.value }) : undefined)
     for (const q of rows.quality)
-      this.push(
-        'QualitySamples',
-        {
-          Id: this.raw.QualitySamples.total + 1,
+      this.push('QualitySamples', q.sampleT, (id) => ({
+          Id: id,
           MachineId: q.machineId,
           SampleTimeUtc: iso(q.sampleT),
           Characteristic: q.characteristic,
@@ -204,9 +199,7 @@ export class DemoDataSource implements LiveSource {
           Nominal: q.nominal,
           Lsl: q.lsl,
           Usl: q.usl,
-        },
-        q.sampleT,
-      )
+        }))
   }
 
   private buildReference(): Record<string, RawRow[]> {
@@ -244,6 +237,9 @@ export class DemoDataSource implements LiveSource {
         Usl: m.spec.usl,
         ProcessStdDev: m.spec.sigma,
       })),
+      MachineTags: MACHINES.flatMap((m, idx) =>
+        tagDefsOf(m, idx).map((d, k) => ({ MachineId: m.id, Tag: d.tag, Channel: d.channel, RelativeTo: d.relativeTo, Unit: TAGS[m.type][k].unit, Description: TAGS[m.type][k].description, Baseline: Number(d.baseline.toPrecision(4)) })),
+      ),
       Lines: LINES.map((l) => ({ LineId: l.id, LineName: l.name })),
       DowntimeReasons: DOWNTIME_REASONS.filter((r) => r.id > 0).map((r) => ({ ReasonCode: r.id, Description: r.label, Category: r.category, IsPlanned: r.planned })),
       Employees: PEOPLE.map((p) => ({ EmployeeId: EMPLOYEE_NO[p.id], FullName: p.name, Role: p.role, HireDate: dateOnly(this.t0 - p.experienceYears * 365.25 * DAY) })),
@@ -285,6 +281,9 @@ export class DemoDataSource implements LiveSource {
   }
   spc(id: string): SpcPoint[] {
     return this.spcByMachine.get(id) ?? []
+  }
+  signals(id: string): SignalPoint[] {
+    return this.units.get(id)?.signals.list() ?? []
   }
   riskSeries(id: string): RiskPoint[] {
     return this.predictive.riskSeries(id)

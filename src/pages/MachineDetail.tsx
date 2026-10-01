@@ -3,6 +3,7 @@ import { useMemo } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { EChart } from '@/components/charts/EChart'
 import { StateTimeline } from '@/components/charts/StateTimeline'
+import { SignalCharts } from '@/components/charts/SignalCharts'
 import { baseOption, categoryAxisStyle, hhmm, timeAxisStyle, useChartTokens, valueAxisStyle } from '@/components/charts/theme'
 import { Avatar } from '@/components/machine/OperatorChip'
 import { StatusBadge } from '@/components/machine/StatusBadge'
@@ -242,6 +243,14 @@ export default function MachineDetail() {
           <div className="px-2 pb-2 pt-1"><EChart option={cumOption} height={240} label="Kümülatif üretim, plan ve tahmin" /></div>
         </Card>
       </section>
+
+      <Card>
+        <CardHeader
+          title="Süreç sinyalleri · son 48 saat"
+          subtitle={`Çalışırken 5 dakikalık ortalama · kesikli çizgi: devreye alma referansı · kırmızı: referanstan belirgin sapma${m.type === 'furnace' ? ' · fırında sadece tutma (reçete sıcaklığı) anı' : ''}`}
+        />
+        <SignalCharts m={m} now={now} />
+      </Card>
 
       <section className="grid grid-cols-3 gap-4">
         <Card>
