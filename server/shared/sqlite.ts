@@ -29,6 +29,7 @@ export function openSqlite(): DatabaseSync {
       temp        REAL    NOT NULL,
       vib         REAL    NOT NULL,
       feed        REAL    NOT NULL,
+      cur         REAL    NOT NULL DEFAULT 0,
       PRIMARY KEY (machine_id, t)
     ) WITHOUT ROWID;
     CREATE INDEX IF NOT EXISTS bucket_t ON bucket (t);
@@ -65,6 +66,33 @@ export function openSqlite(): DatabaseSync {
       PRIMARY KEY (machine_id, t)
     ) WITHOUT ROWID;
 
+    -- Öngörücü bakım: 5 dk'da bir makine riski
+    CREATE TABLE IF NOT EXISTS risk (
+      machine_id TEXT    NOT NULL,
+      t          INTEGER NOT NULL,
+      risk       REAL    NOT NULL,
+      level      TEXT    NOT NULL,
+      factors    TEXT    NOT NULL,
+      PRIMARY KEY (machine_id, t)
+    ) WITHOUT ROWID;
+    CREATE INDEX IF NOT EXISTS risk_t ON risk (t);
+
+    -- Bakım bildirimleri (bizim veritabanımız; fabrikanın SQL Server'ına yazılmaz)
+    CREATE TABLE IF NOT EXISTS notification (
+      id          TEXT PRIMARY KEY,
+      t           INTEGER NOT NULL,
+      machine_id  TEXT    NOT NULL,
+      line_id     TEXT    NOT NULL,
+      title       TEXT    NOT NULL,
+      message     TEXT    NOT NULL,
+      recipients  TEXT    NOT NULL,
+      risk        REAL    NOT NULL,
+      factors     TEXT    NOT NULL,
+      status      TEXT    NOT NULL DEFAULT 'new',
+      status_at   INTEGER,
+      failure_at  INTEGER
+    );
+
     -- SQL Server'daki her tablo için en son okunan Id
     CREATE TABLE IF NOT EXISTS sync_state (
       tbl          TEXT PRIMARY KEY,
@@ -73,6 +101,9 @@ export function openSqlite(): DatabaseSync {
       rows_total   INTEGER NOT NULL
     );
   `)
+  // Göç: önceki sürümün bucket tablosunda motor akımı kolonu yoktu
+  const cols = db.prepare('PRAGMA table_info(bucket)').all() as { name: string }[]
+  if (!cols.some((c) => c.name === 'cur')) db.exec('ALTER TABLE bucket ADD COLUMN cur REAL NOT NULL DEFAULT 0')
   return db
 }
 

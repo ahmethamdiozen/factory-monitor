@@ -33,6 +33,8 @@ export interface BucketOut {
   temp: number
   vib: number
   feed: number
+  /** Motor akımı (A) */
+  cur: number
 }
 
 export interface StopOut {
@@ -198,6 +200,7 @@ export class MachineTransformer {
       temp: pv?.temperatureC ?? 0,
       vib: pv?.vibrationMmS ?? 0,
       feed: pv?.feedPct ?? 0,
+      cur: pv?.motorCurrentA ?? 0,
     })
   }
 

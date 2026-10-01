@@ -47,7 +47,7 @@ Gereksinimler:
    ```
 6. Tarayıcıda aç: **http://localhost:5173**
 
-İlk açılışta simülatör son 24 saati SQL Server'a yazar (~1 sn), collector bunu okur (~1 sn), sonra her şey gerçek saatle 10 sn'de bir akar. Durdurmak için `Ctrl + C`; SQL Server'ı kapatmak için `npm run db:down`.
+İlk açılışta simülatör son 48 saati SQL Server'a yazar (~2 sn), collector bunu okur (~2 sn), sonra her şey gerçek saatle 10 sn'de bir akar. Durdurmak için `Ctrl + C`; SQL Server'ı kapatmak için `npm run db:down`.
 
 ### Windows
 
@@ -80,18 +80,20 @@ Docker kurmak istemeyen herkes için: yukarıdaki **kurulumsuz demo** linki.
 |---|---|---|---|
 | **Makine** | `/makine-ekrani/:id` | Makine başındaki operatör (tablet) | Büyük durum bandı, bu vardiya üretilen / hedef, "geridesin / öndesin", hız ve yavaşlık nedeni + ne yapmalı, son 1 saat hatalı ürün, saat saat üretim, yapılacaklar. Jargon yok. Tam ekran (kiosk) modu var. |
 | **Foreman** | `/foreman/:hatId` | Hattın o vardiyadaki sorumlusu | Öncelikli müdahale listesi (öneriyle), vardiya hedefi ve vardiya sonu tahmini, hattın makineleri, saat saat plan/gerçek/fark/kayıp tablosu, en büyük 3 kayıp, ekip, önceki vardiyadan otomatik devir özeti. |
-| **Mühendis** | `/` | Mühendis / yönetici | OEE, kayıp şelalesi, duruş Pareto, SPC (x̄–R, Western Electric, Cpk), vardiya ve personel analizi, olay günlüğü, metrik rehberi. |
+| **Mühendis** | `/` | Mühendis / yönetici | OEE, kayıp şelalesi, duruş Pareto, SPC (x̄–R, Western Electric, Cpk), **öngörücü bakım** (yapay zekâ ile arıza tahmini), vardiya ve personel analizi, olay günlüğü, metrik rehberi. |
 | **SQL Veri** | `/sql` | Teknik ekip / sunum | Veri hattının canlı sağlığı (her halkanın durumu ve gecikmesi), SQL Server'daki ham tablolar, her tablonun nasıl anlamlandırıldığı. |
+
+Header'daki **zil**: öngörücü bakım bildirimleri (bakım ekibi ve hattın foreman'i için), "Okundu / Bakım planlandı / Kapat" durumlarıyla.
 
 Backend koparsa ekranlar **eldeki son veriyi göstermeye devam eder**, sağ üstte (kiosk modunda sağ altta) "Yeni veri alınamıyor · son veri 17:42:10" uyarısı çıkar. Collector veya simülatör durursa "Veri gecikiyor" uyarısı çıkar.
 
 ## Veri hattı
 
 ### 1. Simülatör (`server/simulator/`) — fabrika tarafı
-12 makineyi gerçek saatle simüle eder, PLC/SCADA'nın yazacağı satırları SQL Server'a yazar. **Yavaşlık nedenini yazmaz**; sadece sinyal üretir (sıcaklık, titreşim, besleme %, takım çevrim sayısı, hammadde lotu, çevrim süresi). Demo için gömülü hikâyeler başlangıç anına göre kurgulanır: ENJ-02 takım aşınması (SPC alarmı), ENJ-04 aşırı ısınma, Hat 3 besleme dalgalanması, PKT-02 malzeme beklemesi, MNT-02 planlı bakım, ENJ-03 kalıp değişimi, MNT-04'te B vardiyasında yeni operatör.
+12 makineyi gerçek saatle simüle eder, PLC/SCADA'nın yazacağı satırları SQL Server'a yazar. **Yavaşlık nedenini yazmaz**; sadece sinyal üretir (sıcaklık, titreşim, besleme %, takım çevrim sayısı, hammadde lotu, çevrim süresi). Demo için gömülü hikâyeler başlangıç anına göre kurgulanır: MNT-01 hızla yıpranıyor (yapay zekâ ~3 saat sonraki arızayı önceden haber verir), PKT-04'ün 3 saat önceki arızası önceden uyarılmıştı, ENJ-02 takım aşınması (SPC alarmı), ENJ-04 aşırı ısınma, Hat 3 besleme dalgalanması, PKT-02 malzeme beklemesi, MNT-02 planlı bakım, ENJ-03 kalıp değişimi, MNT-04'te B vardiyasında yeni operatör.
 
 - `npm run sim` kaldığı yerden devam eder (aradaki boşluğu doldurur)
-- `npm run sim:reset` her şeyi silip son 24 saati yeniden üretir (sunumdan hemen önce önerilir)
+- `npm run sim:reset` her şeyi silip son 48 saati yeniden üretir (sunumdan hemen önce önerilir)
 
 ### 2. SQL Server (`server/sql/schema.sql`) — bize verilecek olan
 `Machines`, `Lines`, `DowntimeReasons`, `Employees`, `ShiftDefinitions`, `ShiftAssignments`, `WorkOrders` (referans) ve `MachineEvents` (sadece durum değişince), `ProductionCounters` (10 sn'de bir **kümülatif** sayaç, 06:00'da sıfırlanır), `ProcessValues`, `QualitySamples` (ölçüm). Zamanlar UTC, tablolar sadece ekleme.
@@ -102,6 +104,27 @@ kümülatif sayaç → 10 sn'lik OK/NOK · olaylar → dilim durumu + duruş kay
 
 ### 4. API (`server/api/`, port 3001)
 `/api/meta`, `/api/series`, `/api/events`, `/api/spc` (SQLite'tan), `/api/health`, `/api/sql/tables`, `/api/sql/table/:ad` (SQL Server'dan, salt-okur, beyaz listeli). Vite geliştirme sunucusu `/api` isteklerini buraya yönlendirir.
+
+## Öngörücü bakım (yapay zekâ ile arıza tahmini)
+
+**Soru:** "Bu makinede önümüzdeki 24 saatte arıza olacak mı?" **Model karar verir, mesajı şablon yazar** (ileride küçük dil modeli bağlanacak; sadece `src/ml/notify.ts` içindeki `composeMessage()` değişir).
+
+- **Belirtiler:** simülatörde her makinenin gizli bir yıpranma seviyesi vardır. Yıpranma motor akımını (`ProcessValues.MotorCurrentA`), titreşimi, mikro duruş sıklığını ve çevrim süresi düzensizliğini artırır, sonunda arızaya yol açar. Arızaların bir kısmı (sensör/PLC) ani ve belirtisizdir; bunları hiçbir model önceden göremez.
+- **Özellikler:** `src/ml/features.ts` son 1–24 saatin eğilimlerini çıkarır. Eğitimde ve canlıda **aynı kod** çalışır.
+- **Model:** Python'da (scikit-learn, Gradient Boosting) eğitilir, ağaçlar `src/ml/modelData.ts`'e aktarılır ve TypeScript'te çalışır: tam sürümde collector'da (5 dk'da bir → SQLite `risk`, `notification`), web demosunda tarayıcıda. TS tahminlerinin Python'la aynı olduğu testle doğrulanır.
+- **Sonuç (simüle 180 gün, modelin görmediği son 30 günde):** öngörülebilir arızaların ~%69'u ortalama ~16 saat önceden yakalanır; makine başına haftada ~0,4 boş alarm. Değerler `ml:train` çıktısında ve uygulamadaki **Öngörücü Bakım** sayfasındadır.
+- **Ne kadar veri gerekir?** Belirleyici olan süre değil, arıza örneği sayısıdır (~50–100). Sayfadaki öğrenme eğrisi bunu gösterir; simülasyonda belirtiler basit olduğu için eğri erken düzleşir, gerçek veride daha yavaş yükselir.
+
+Modeli yeniden eğitmek (isteğe bağlı; eğitilmiş model repoda hazır, uygulama için Python gerekmez):
+```bash
+# bir kere: Python 3.9+ sanal ortamı
+python3 -m venv ml/.venv            # Windows: py -m venv ml\.venv
+ml/.venv/bin/pip install -r ml/requirements.txt   # Windows: ml\.venv\Scripts\pip install -r ml\requirements.txt
+
+npm run ml:dataset   # simülatörden 180 günlük eğitim verisi (~30 sn) → data/ml/dataset.csv
+npm run ml:train     # eğitim + değerlendirme (~1 dk) → src/ml/modelData.ts
+```
+Ayrıntılar: [`ml/README.md`](ml/README.md).
 
 ## Diğer komutlar
 
@@ -125,10 +148,13 @@ server/
   collector/             SQL Server → dönüştür → SQLite
   api/                   Fastify API
   shared/                env, mssql, sqlite yardımcıları
+  ml/exportDataset.ts    eğitim verisi üretici
+ml/                      Python: train.py, requirements.txt
 src/
   sim/                   makine simülasyonu (machineSim), PLC kaydedici, tohum veri
   pipeline/              SQL satır tipleri, dönüştürücü (saf, testli), yerel test hattı
   lib/                   kpi.ts, spc.ts, rules.ts — saf hesaplar
+  ml/                    öngörücü bakım: features, predict, riskEngine, notify, modelData (Python'dan üretilir)
   data/                  ApiDataSource (tam sürüm), demo/DemoDataSource (web demosu), registry, snapshot, shiftView
   components/, pages/    arayüz (operator/, foreman/, SqlData, mühendis sayfaları)
 ```

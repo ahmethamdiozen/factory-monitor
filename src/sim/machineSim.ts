@@ -8,6 +8,12 @@ import { shiftOf } from './factoryDef'
  * Tek bir makinenin "fiziksel" simülasyonu. Her 10 sn'lik dilim için bir PLC/SCADA
  * sisteminin kaydedeceği ham sinyalleri üretir. Yavaşlık NEDENİNİ yazmaz; nedenler
  * sinyal desenlerine gömülüdür ve analiz katmanı (src/lib/rules.ts) tarafından çıkarılır.
+ *
+ * Yıpranma fiziği: her makinenin gizli bir yıpranma seviyesi (0→1) vardır. Çalıştıkça artar,
+ * motor akımını, titreşimi, mikro duruşları ve çevrim süresi oynaklığını yükseltir; yüksek
+ * yıpranma arızaya yol açar. Planlı bakım yıpranmayı azaltır, arıza onarımı sıfırlar.
+ * Arızaların bir kısmı (sensör/PLC gibi) belirtisiz "ani" arızadır — hiçbir model bunları
+ * önceden göremez. Yıpranma seviyesi SQL'e yazılmaz; öngörücü model onu belirtilerden çıkarır.
  */
 
 const MIN = 60 * 1000
@@ -33,6 +39,8 @@ interface Story {
   wear?: boolean
   rookieInB?: boolean
   forced?: ForcedSegment[]
+  /** Yıpranma hikâyesi: fromH'den failAtH'ye (saat, t0'a göre) yıpranma 0,05→1 yükselir; failAtH'de arıza */
+  degrade?: { fromH: number; failAtH: number }
 }
 
 /** Demo için bilinçli gömülmüş "hikâyeler" (dakikalar simülatörün başladığı ana, t0'a göre). */
@@ -45,7 +53,18 @@ export const STORIES: Record<string, Story> = {
   M09: { forced: [{ fromMin: -40, toMin: 20, kind: 'slow', reasonId: TRUTH.FEED, factor: 0.82 }] },
   M10: { forced: [{ fromMin: -22, toMin: 14, kind: 'stop', state: STATE.STOPPED, reasonId: 6 }] },
   M11: { forced: [{ fromMin: -40, toMin: 20, kind: 'slow', reasonId: TRUTH.FEED, factor: 0.8 }] },
-  M12: { forced: [{ fromMin: -170, toMin: -122, kind: 'stop', state: STATE.STOPPED, reasonId: 1 }] },
+  // MNT-01: şu an hızla yıpranıyor; ~3 saat sonra motor arızası (model önceden uyarır)
+  M05: { degrade: { fromH: -30, failAtH: 3 }, forced: [{ fromMin: 180, toMin: 228, kind: 'stop', state: STATE.STOPPED, reasonId: 1 }] },
+  // PKT-04: 3 saat önceki motor arızası yıpranma kaynaklıydı (risk grafiğinde öncesi görünür)
+  M12: { degrade: { fromH: -30, failAtH: -170 / 60 }, forced: [{ fromMin: -170, toMin: -122, kind: 'stop', state: STATE.STOPPED, reasonId: 1 }] },
+}
+
+/** Hat bazında motorun nominal akımı (A) */
+const BASE_CURRENT: Record<string, number> = { L1: 30, L2: 9, L3: 15 }
+
+/** Yıpranmaya bağlı arıza olasılığı (saat başına). 0,55 altında yok, 1'de saatte ~0,5. */
+export function degradationHazardPerHour(d: number): number {
+  return d < 0.55 ? 0 : 0.5 * Math.pow((d - 0.55) / 0.45, 3)
 }
 
 /** Takım ömrü (çevrim). ENJ-02 12 saatte bir takım değiştirir; diğerleri ürün değişiminde. */
@@ -70,8 +89,12 @@ export interface RawSample {
   materialLot: string
   /** 15 dk'da bir 5'li kalite ölçümü */
   quality: number[] | null
+  /** Motor akımı (A); makine dururken boşta akımı */
+  motorCurrentA: number
   /** Sadece doğrulama için: simülatörün uyguladığı baskın yavaşlama nedeni */
   truthSlow: number
+  /** Sadece doğrulama / analiz için: gizli yıpranma seviyesi (SQL'e yazılmaz) */
+  truthDegradation: number
 }
 
 interface Params {
@@ -85,12 +108,17 @@ interface Params {
   spcBias: number
   spcOffset: number
   baseTemp: number
+  /** Sıfırdan tam yıpranmaya kaç çalışma günü */
+  degDays: number
+  baseCurrent: number
 }
 
 interface Seg {
   state: Exclude<StateCode, 0>
   reasonId: number
   remaining: number
+  /** Yıpranma kaynaklı arıza mı (onarım yıpranmayı sıfırlar) */
+  deg?: boolean
 }
 
 interface SlowEp {
@@ -116,6 +144,10 @@ export class MachineSim {
   private lastWearAge = 0
   private lotNo = 1
   private started = false
+  /** Yıpranma için ayrı rastgele sayı akışı (mevcut olayların dizisini bozmamak için) */
+  private readonly drng: Rng
+  private deg: number
+  private degStoryDone = false
 
   constructor(machine: Machine, idx: number, t0: number) {
     this.machine = machine
@@ -134,9 +166,25 @@ export class MachineSim {
       spcBias: gaussian(r) * 0.15,
       spcOffset: Math.floor(r() * SPC_EVERY_BUCKETS),
       baseTemp: 40 + idx * 0.6,
+      degDays: 0,
+      baseCurrent: 0,
     }
     this.temp = this.p.baseTemp
     this.toolCycles = Math.floor(r() * toolLifeCycles(machine) * 0.3)
+    this.drng = mulberry32(5000 + idx * 7919)
+    this.p.degDays = between(this.drng, 3, 8)
+    this.p.baseCurrent = (BASE_CURRENT[machine.lineId] ?? 12) * between(this.drng, 0.92, 1.08)
+    this.deg = this.drng() * 0.4
+  }
+
+  /** Hikâyeli makinede yıpranma rampası etkin mi? */
+  private storyRamp(t: number): number | null {
+    const d = this.story.degrade
+    if (!d) return null
+    const from = this.t0 + d.fromH * HOUR
+    const to = this.t0 + d.failAtH * HOUR
+    if (t < from || t >= to) return null
+    return 0.05 + 0.95 * ((t - from) / (to - from))
   }
 
   private forcedAt(t: number): ForcedSegment | undefined {
@@ -156,14 +204,20 @@ export class MachineSim {
     const per = (meanSec: number) => BUCKET_SEC / meanSec
     const sh = shiftOf(t)
     const hazard = sh === 'C' ? 1.6 : sh === 'B' ? 1.05 : 1
-    const u = r()
-    let c = per(p.mtbfMin * 60) * hazard
-    if (u < c) {
-      const rr = r()
-      this.seg = { state: STATE.STOPPED, reasonId: rr < 0.5 ? 1 : rr < 0.85 ? 2 : 3, remaining: b(between(r, 20, 90) * 60) }
+    // Yıpranma kaynaklı arıza (hikâye rampasındayken arıza zamanı hikâyece belirlenir)
+    if (this.storyRamp(t) === null && this.drng() < (degradationHazardPerHour(this.deg) * BUCKET_SEC) / 3600) {
+      this.seg = { state: STATE.STOPPED, reasonId: this.drng() < 0.7 ? 1 : 3, remaining: b(between(this.drng, 40, 120) * 60), deg: true }
       return
     }
-    c += per(p.microMin * 60)
+    const u = r()
+    // Ani (belirtisiz) arızalar: çoğunlukla sensör/PLC
+    let c = per(p.mtbfMin * 60 * 30) * hazard
+    if (u < c) {
+      const rr = r()
+      this.seg = { state: STATE.STOPPED, reasonId: rr < 0.6 ? 2 : rr < 0.8 ? 1 : 3, remaining: b(between(r, 20, 90) * 60) }
+      return
+    }
+    c += per(p.microMin * 60) * (1 + 2.5 * this.deg * this.deg)
     if (u < c) {
       this.seg = { state: STATE.STOPPED, reasonId: 10, remaining: b(between(r, 20, 120)) }
       return
@@ -224,10 +278,13 @@ export class MachineSim {
         if (this.seg.remaining < 0) {
           if (this.seg.reasonId !== 10) this.warmup = WARMUP_BUCKETS
           if (this.seg.reasonId === 4) {
-            // Ürün değişimi: yeni takım ve yeni hammadde lotu
-            this.toolCycles = 0
+            // Ürün değişimi: yeni hammadde lotu; takım da değişir (aşınma hikâyesindeki makinede
+            // takım kendi 12 saatlik döngüsüyle değişir, sayaç ona bağlıdır)
+            if (!this.story.wear) this.toolCycles = 0
             this.lotNo++
           }
+          if (this.seg.deg) this.deg = 0.05 + 0.05 * this.drng() // onarım
+          else if (this.seg.reasonId === 8) this.deg *= 0.6 // planlı bakım yıpranmayı azaltır
           this.seg = null
         }
       }
@@ -238,6 +295,17 @@ export class MachineSim {
       }
     }
     this.started = true
+
+    // Yıpranma: hikâye rampası ya da doğal artış (sadece çalışırken)
+    const ramp = this.storyRamp(t)
+    if (ramp !== null) this.deg = ramp
+    else if (this.story.degrade && !this.degStoryDone && t >= this.t0 + this.story.degrade.failAtH * HOUR) {
+      this.degStoryDone = true
+      this.deg = 0.05 // hikâyedeki arıza onarıldı
+    } else if (state === STATE.RUNNING) {
+      this.deg = Math.min(1, this.deg + Math.max(0, 1 + 0.8 * gaussian(this.drng)) / (this.p.degDays * 8640))
+    }
+    const d = this.deg
 
     // Aşınma hikâyesi: takım yaşı başa sararsa takım değişmiştir
     let wearLoss = 0
@@ -268,7 +336,9 @@ export class MachineSim {
         toolCycles: this.toolCycles,
         materialLot: this.lot,
         quality: null,
+        motorCurrentA: round(this.p.baseCurrent * 0.08 + Math.abs(gaussian(this.drng)) * 0.1, 1),
         truthSlow: TRUTH.NONE,
+        truthDegradation: d,
       }
     }
 
@@ -323,7 +393,7 @@ export class MachineSim {
         truth = c
       }
     }
-    const speed = Math.max(0.05, base * prod)
+    const speed = Math.max(0.05, base * prod * (1 - 0.04 * d * d))
 
     this.acc += m.idealRate * BUCKET_SEC * speed
     const total = Math.floor(this.acc)
@@ -340,10 +410,12 @@ export class MachineSim {
     this.toolCycles += total
 
     // Sinyaller
-    const tempTarget = slowCause === TRUTH.TEMP ? 59 : this.p.baseTemp
+    const tempTarget = slowCause === TRUTH.TEMP ? 59 : this.p.baseTemp + 3 * d
     this.temp += (tempTarget - this.temp) * (slowCause === TRUTH.TEMP ? 0.25 : 0.05)
     const feed = slowCause === TRUTH.FEED ? 100 * slowFactor + gaussian(r) * 2.5 : 100 + gaussian(r) * 1.2
-    const vib = 1.8 + 12 * wearLoss + Math.abs(gaussian(r)) * 0.15
+    const vib = 1.8 + 12 * wearLoss + 0.35 * d * d + Math.abs(gaussian(r)) * 0.15
+    const current = this.p.baseCurrent * (1 + 0.22 * Math.pow(d, 1.5)) * (1 + gaussian(this.drng) * 0.012)
+    const cycleJitter = 1 + gaussian(this.drng) * (0.004 + 0.04 * d * d)
 
     let quality: number[] | null = null
     if ((i + this.p.spcOffset) % SPC_EVERY_BUCKETS === 0) {
@@ -360,14 +432,16 @@ export class MachineSim {
       reasonId,
       produced: total,
       rejects: nok,
-      cycleTimeMs: Math.round(1000 / (m.idealRate * speed)),
+      cycleTimeMs: Math.round((1000 / (m.idealRate * speed)) * cycleJitter),
       temperatureC: round(this.temp + gaussian(r) * 0.3, 1),
       vibrationMmS: round(vib, 2),
       feedPct: round(feed, 1),
       toolCycles: this.toolCycles,
       materialLot: this.lot,
       quality,
+      motorCurrentA: round(current, 1),
       truthSlow: minF < 0.93 ? truth : TRUTH.NONE,
+      truthDegradation: d,
     }
   }
 }

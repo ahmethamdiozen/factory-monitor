@@ -34,7 +34,7 @@ const GROUPS: { title: string; items: Item[] }[] = [
       { name: 'Mikro duruşlar', desc: '2 dakikadan kısa, kayda geçmeyen ama toplamda büyük kayıp yaratan duruşlar.', status: 'live', where: 'Olay Günlüğü' },
       { name: 'Ayar / kalıp değişim süresi (SMED)', desc: 'Ürün değişiminde kaybedilen süre; kısaltmak küçük partili üretimi mümkün kılar.', status: 'live', where: 'Kayıp' },
       { name: 'Planlı bakım uyumu (PM)', desc: 'Planlı bakımların zamanında yapılma oranı; arızaları öncesinde azaltır.', status: 'data' },
-      { name: 'Öngörücü bakım sinyalleri', desc: 'Titreşim, sıcaklık, akım gibi sensör eğilimleriyle arıza öncesi uyarı.', status: 'data' },
+      { name: 'Öngörücü bakım (yapay zekâ)', desc: 'Motor akımı, titreşim, mikro duruş ve çevrim düzensizliği eğilimlerinden 24 saat içinde arıza riskini tahmin eder; risk yükselince bakım ekibine ve foreman\'e bildirim gider.', status: 'live', where: 'Öngörücü Bakım, Foreman, Makine' },
     ],
   },
   {

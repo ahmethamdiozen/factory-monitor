@@ -26,7 +26,8 @@ export async function writeRows(pool: ConnectionPool, rows: RecordedRows): Promi
     t.columns.add('FeedPct', sql.Decimal(5, 1), { nullable: false })
     t.columns.add('ToolCycleCount', sql.Int, { nullable: false })
     t.columns.add('MaterialLot', sql.VarChar(20), { nullable: false })
-    for (const p of rows.process) t.rows.add(p.machineId, new Date(p.sampleT), p.cycleTimeMs, p.temperatureC, p.vibrationMmS, p.feedPct, p.toolCycleCount, p.materialLot)
+    t.columns.add('MotorCurrentA', sql.Decimal(6, 1), { nullable: true })
+    for (const p of rows.process) t.rows.add(p.machineId, new Date(p.sampleT), p.cycleTimeMs, p.temperatureC, p.vibrationMmS, p.feedPct, p.toolCycleCount, p.materialLot, p.motorCurrentA)
     tables.push(t)
   }
   if (rows.quality.length) {

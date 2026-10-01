@@ -26,7 +26,7 @@ export interface SqlTableData {
 /** Gösterilecek tablolar (beyaz liste) ve anlamlandırma açıklamaları */
 export const SQL_TABLES: Record<string, SqlTableDef> = {
   ProductionCounters: { key: 'Id', time: 'SampleTimeUtc', kind: 'ölçüm', how: 'Kümülatif sayaçlar ardışık okumaların farkı alınarak 10 sn\'lik OK/NOK adetlerine çevrilir; gün başında sayaç sıfırlanınca fark yeniden başlatılır.' },
-  ProcessValues: { key: 'Id', time: 'SampleTimeUtc', kind: 'ölçüm', how: 'Çevrim süresi ideal çevrimle kıyaslanıp hız %\'si bulunur. Sıcaklık, titreşim, besleme, takım sayacı ve lot kurallara girer; yavaşlık nedeni buradan çıkarılır.' },
+  ProcessValues: { key: 'Id', time: 'SampleTimeUtc', kind: 'ölçüm', how: 'Çevrim süresi ideal çevrimle kıyaslanıp hız %\'si bulunur. Sıcaklık, titreşim, besleme, takım sayacı ve lot kurallara girer; yavaşlık nedeni buradan çıkarılır. Motor akımı, titreşim ve çevrim oynaklığı öngörücü bakım modelinin girdisidir: yıpranan makinede akım yavaşça yükselir.' },
   MachineEvents: { key: 'EventId', time: 'EventTimeUtc', kind: 'olay', how: 'Durum sadece değişince kaydedilir; 10 sn\'lik dilimlere ileri doldurulur ve başlangıç–bitişli duruş kayıtlarına dönüştürülür. Arızadan dönüş "ısınma" kuralını tetikler.' },
   QualitySamples: { key: 'Id', time: 'SampleTimeUtc', kind: 'ölçüm', how: '5\'li ölçümler alt gruplara toplanır (ortalama + aralık); x̄–R kontrol grafiği, Western Electric kuralları ve Cpk bunlardan hesaplanır.' },
   Machines: { key: 'MachineId', kind: 'referans', how: 'İdeal çevrim süresi (hız %) ve günlük hedef (plan) hesaplarının temelidir; tolerans alanları SPC\'de kullanılır.' },

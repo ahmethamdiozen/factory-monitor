@@ -12,6 +12,8 @@ import { PlcRecorder, emptyRows } from '@/sim/plcRecorder'
 import type { RecordedRows } from '@/sim/plcRecorder'
 import { BUCKET_MS } from '@/lib/types'
 import type { MachineSeries, SlowEvent, SpcPoint, StopEvent } from '@/lib/types'
+import { PredictiveSession } from '@/ml/session'
+import type { MaintNotification, NotificationStatus, RiskPoint } from '@/ml/types'
 
 /**
  * DEMO MODU — kurulum gerektirmeyen web sürümü (GitHub Pages).
@@ -22,6 +24,8 @@ import type { MachineSeries, SlowEvent, SpcPoint, StopEvent } from '@/lib/types'
  */
 
 const DAY = 24 * 3600 * 1000
+/** Geçmiş: öngörücü bakımın 24 saatlik pencereleri için 48 saat */
+const HISTORY = 2 * DAY
 const RAW_KEEP = 400
 
 interface Unit {
@@ -57,20 +61,22 @@ export class DemoDataSource implements LiveSource {
   /** "SQL Server" tablolarının bellek kopyası: son satırlar + toplam sayaç */
   private raw: Record<string, { rows: RawRow[]; total: number; lastTime: number | null }> = {}
   private readonly reference: Record<string, RawRow[]>
+  private readonly predictive: PredictiveSession
 
   constructor() {
     this.t0 = alignBucket(Date.now())
-    this.startT = this.t0 - DAY
+    this.startT = this.t0 - HISTORY
     MACHINES.forEach((m, idx) => {
       this.units.set(m.id, {
         sim: new MachineSim(m, idx, this.t0),
         rec: new PlcRecorder(m),
         tr: new MachineTransformer({ id: m.id, idealCycleMs: 1000 / m.idealRate, toolLife: toolLifeCycles(m) }, { experienceAt: experienceFromDefs }),
       })
-      this.series.set(m.id, createSeries(this.startT, (2 * DAY) / BUCKET_MS))
+      this.series.set(m.id, createSeries(this.startT, (HISTORY + DAY) / BUCKET_MS))
     })
     for (const t of ['MachineEvents', 'ProductionCounters', 'ProcessValues', 'QualitySamples']) this.raw[t] = { rows: [], total: 0, lastTime: null }
     this.reference = this.buildReference()
+    this.predictive = new PredictiveSession(MACHINES.map((m) => ({ id: m.id, code: m.code, name: m.name, lineId: m.lineId, lineShort: LINES.find((l) => l.id === m.lineId)!.short })))
   }
 
   start(): void {
@@ -106,7 +112,10 @@ export class DemoDataSource implements LiveSource {
         for (const c of rows.counters) u.tr.addCounter(c, rows.process.find((p) => p.sampleT === c.sampleT), mo)
         for (const q of rows.quality) u.tr.addQuality(q, mo)
         const list = perMachine.get(id) ?? []
-        for (const b of mo.buckets) list.push(b)
+        for (const b of mo.buckets) {
+          list.push(b)
+          this.predictive.add(id, b)
+        }
         perMachine.set(id, list)
         out.stops.push(...mo.stops)
         out.slows.push(...mo.slows)
@@ -177,6 +186,7 @@ export class DemoDataSource implements LiveSource {
           FeedPct: p.feedPct,
           ToolCycleCount: p.toolCycleCount,
           MaterialLot: p.materialLot,
+          MotorCurrentA: p.motorCurrentA,
         },
         p.sampleT,
       )
@@ -270,6 +280,16 @@ export class DemoDataSource implements LiveSource {
   }
   spc(id: string): SpcPoint[] {
     return this.spcByMachine.get(id) ?? []
+  }
+  riskSeries(id: string): RiskPoint[] {
+    return this.predictive.riskSeries(id)
+  }
+  notifications(): MaintNotification[] {
+    return this.predictive.notifications()
+  }
+  setNotificationStatus(id: string, status: NotificationStatus): void {
+    this.predictive.setStatus(id, status, Date.now())
+    this.emit()
   }
   subscribe(fn: () => void): () => void {
     this.listeners.add(fn)

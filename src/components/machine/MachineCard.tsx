@@ -1,10 +1,11 @@
-import { AlertTriangle, CheckCircle2, Clock } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, Clock, HeartPulse } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { Avatar } from '@/components/machine/OperatorChip'
 import { Sparkline } from '@/components/machine/Sparkline'
 import { StatusBadge, STATE_STYLE } from '@/components/machine/StatusBadge'
 import { Meter } from '@/components/ui/meter'
 import { REASON_BY_ID, SLOW_REASONS } from '@/data/registry'
+import { activeRisk } from '@/data/predictiveView'
 import type { MachineLive } from '@/data/snapshot'
 import { dayStartOf, fmtDuration, num, pct } from '@/lib/kpi'
 import { cn } from '@/lib/utils'
@@ -22,6 +23,8 @@ export function MachineCard({ live, now }: { live: MachineLive; now: number }) {
   const durSec = (now - live.sinceT) / 1000
   const elapsed = (now - dayStartOf(now)) / 86400e3
   const nokRate = live.kpiDay.total > 0 ? live.kpiDay.nok / live.kpiDay.total : 0
+  const r = activeRisk(m.id, live.state, live.reasonId)
+  const risk = r?.level === 'alarm' ? r : null
   const etaAt = proj.etaSec !== null && proj.etaSec > 0 ? now + proj.etaSec * 1000 : null
 
   let planLine: React.ReactNode
@@ -59,7 +62,14 @@ export function MachineCard({ live, now }: { live: MachineLive; now: number }) {
           </div>
           <div className="mt-0.5 truncate text-[11px] text-fg-2">{m.name}</div>
         </div>
-        <StatusBadge state={live.stateKey} />
+        <div className="flex flex-col items-end gap-1">
+          <StatusBadge state={live.stateKey} />
+          {risk && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-critical/15 px-1.5 py-0.5 text-[11px] font-medium text-critical-text" title={risk.factors.map((f) => f.text).join(' · ')}>
+              <HeartPulse className="size-3" /> Arıza riski %{Math.round(risk.risk * 100)}
+            </span>
+          )}
+        </div>
       </div>
 
       <div className="flex items-end justify-between gap-2">

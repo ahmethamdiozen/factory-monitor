@@ -64,6 +64,7 @@ export class PlcRecorder {
       feedPct: s.feedPct,
       toolCycleCount: s.toolCycles,
       materialLot: s.materialLot,
+      motorCurrentA: s.motorCurrentA,
     })
     if (s.quality) {
       const spec = this.machine.spec

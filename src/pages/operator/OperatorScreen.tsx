@@ -1,9 +1,10 @@
-import { AlertTriangle, CheckCircle2, Clock, Info, OctagonAlert, Play, RefreshCw, Square, Wrench } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, Clock, HeartPulse, Info, OctagonAlert, Play, RefreshCw, Square, Wrench } from 'lucide-react'
 import { useMemo } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { HourBars } from '@/components/charts/HourBars'
 import { Avatar } from '@/components/machine/OperatorChip'
 import { MACHINE_BY_ID, REASON_BY_ID } from '@/data/registry'
+import { LEVEL_STYLE, activeRisk } from '@/data/predictiveView'
 import { useSnapshot } from '@/data/snapshot'
 import { SLOW_ADVICE, hourlyBars, lastHourQuality, operatorTodos, shiftProgress, shiftWindowAt } from '@/data/shiftView'
 import type { Tone } from '@/data/shiftView'
@@ -82,6 +83,7 @@ export default function OperatorScreen() {
   }
 
   const { p, bars, q, todos } = data
+  const health = activeRisk(m.id, live.state, live.reasonId)
   const band = BAND[live.stateKey]
   const running = live.state === 0
   const ahead = p.diff >= 0
@@ -97,8 +99,15 @@ export default function OperatorScreen() {
           <div className="text-3xl font-bold tracking-tight">
             {m.code} <span className="font-medium text-fg-2">· {m.name}</span>
           </div>
-          <div className="mt-0.5 text-base text-fg-2">
-            {m.product} · İş emri {m.orderNo}
+          <div className="mt-0.5 flex items-center gap-3 text-base text-fg-2">
+            <span>
+              {m.product} · İş emri {m.orderNo}
+            </span>
+            {health && (
+              <span className={cn('inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-sm font-semibold', LEVEL_STYLE[health.level].bg, LEVEL_STYLE[health.level].text)} title="Öngörücü bakım modeli: önümüzdeki 24 saatte arıza riski">
+                <HeartPulse className="size-4" /> Makine sağlığı: {LEVEL_STYLE[health.level].word}
+              </span>
+            )}
           </div>
         </div>
         <div className="flex items-center gap-6">

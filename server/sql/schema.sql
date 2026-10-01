@@ -101,8 +101,13 @@ CREATE TABLE dbo.ProcessValues (
   FeedPct         decimal(5,1) NOT NULL,
   ToolCycleCount  int          NOT NULL,
   MaterialLot     varchar(20)  NOT NULL,
+  MotorCurrentA   decimal(6,1) NULL,
   INDEX IX_ProcessValues_Time (MachineId, SampleTimeUtc)
 );
+GO
+-- Göç: önceki sürümle kurulmuş veritabanına motor akımı kolonunu ekle
+IF COL_LENGTH('dbo.ProcessValues', 'MotorCurrentA') IS NULL
+  ALTER TABLE dbo.ProcessValues ADD MotorCurrentA decimal(6,1) NULL;
 GO
 IF OBJECT_ID('dbo.QualitySamples') IS NULL
 CREATE TABLE dbo.QualitySamples (

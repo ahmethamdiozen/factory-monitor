@@ -1,4 +1,4 @@
-import { BookOpen, FlaskConical, LayoutDashboard, ListChecks, ShieldCheck, TrendingDown, Users } from 'lucide-react'
+import { BookOpen, FlaskConical, HeartPulse, LayoutDashboard, ListChecks, ShieldCheck, TrendingDown, Users } from 'lucide-react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { IS_DEMO } from '@/data/mode'
 import { cn } from '@/lib/utils'
@@ -7,6 +7,7 @@ const NAV = [
   { to: '/', label: 'Fabrika Genel', icon: LayoutDashboard, end: true },
   { to: '/kayip', label: 'Kayıp & Duruş', icon: TrendingDown },
   { to: '/kalite', label: 'Kalite & SPC', icon: ShieldCheck },
+  { to: '/ongorucu-bakim', label: 'Öngörücü Bakım', icon: HeartPulse },
   { to: '/personel', label: 'Vardiya & Personel', icon: Users },
   { to: '/olaylar', label: 'Olay Günlüğü', icon: ListChecks },
   { to: '/metrikler', label: 'Metrik Rehberi', icon: BookOpen },
@@ -16,6 +17,7 @@ const TITLES: Record<string, string> = {
   '/': 'Fabrika Genel',
   '/kayip': 'Kayıp & Duruş Analizi',
   '/kalite': 'Kalite & SPC',
+  '/ongorucu-bakim': 'Öngörücü Bakım · Yapay Zekâ ile Arıza Tahmini',
   '/personel': 'Vardiya & Personel',
   '/olaylar': 'Olay Günlüğü',
   '/metrikler': 'Metrik Rehberi',

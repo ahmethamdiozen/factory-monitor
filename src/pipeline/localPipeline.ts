@@ -2,7 +2,8 @@ import { BUCKET_MS } from '@/lib/types'
 import type { DataSource } from '@/data/DataSource'
 import type { MachineSeries, SlowEvent, SpcPoint, StopEvent } from '@/lib/types'
 import { createSeries, putBuckets } from '@/data/series'
-import { MACHINES, PEOPLE, shiftOf } from '@/sim/factoryDef'
+import { LINES, MACHINES, PEOPLE, shiftOf } from '@/sim/factoryDef'
+import { PredictiveSession } from '@/ml/session'
 import { MachineSim, toolLifeCycles } from '@/sim/machineSim'
 import { PlcRecorder, emptyRows } from '@/sim/plcRecorder'
 import { MachineTransformer, emptyOutput } from './transform'
@@ -31,6 +32,8 @@ export function runLocalPipeline(startT: number, endT: number, t0: number): Loca
   const series = new Map<string, MachineSeries>()
   const spc = new Map<string, SpcPoint[]>()
 
+  const predictive = new PredictiveSession(MACHINES.map((m) => ({ id: m.id, code: m.code, name: m.name, lineId: m.lineId, lineShort: LINES.find((l) => l.id === m.lineId)!.short })))
+  const allBuckets: TransformOutput['buckets'] = []
   MACHINES.forEach((m, idx) => {
     const sim = new MachineSim(m, idx, t0)
     const rec = new PlcRecorder(m)
@@ -49,6 +52,7 @@ export function runLocalPipeline(startT: number, endT: number, t0: number): Loca
     rows.counters.forEach((c) => tr.addCounter(c, pv.get(c.sampleT), mo))
     rows.quality.forEach((q) => tr.addQuality(q, mo))
     out.buckets.push(...mo.buckets)
+    allBuckets.push(...mo.buckets)
     out.stops.push(...mo.stops)
     out.slows.push(...mo.slows)
     out.spc.push(...mo.spc)
@@ -64,6 +68,10 @@ export function runLocalPipeline(startT: number, endT: number, t0: number): Loca
   const stops: StopEvent[] = dedupe(out.stops).map((e) => ({ id: id++, machineId: e.machineId, state: e.state as StopEvent['state'], reasonId: e.reasonId, start: e.start, end: e.end }))
   const slows: SlowEvent[] = dedupe(out.slows).map((e) => ({ id: id++, machineId: e.machineId, reasonId: e.reasonId, start: e.start, end: e.end, minSpeed: e.minSpeed }))
 
+  // Öngörücü bakım: tüm makinelerin dilimleri zaman sırasıyla
+  allBuckets.sort((a, b) => a.t - b.t || a.machineId.localeCompare(b.machineId))
+  for (const b of allBuckets) predictive.add(b.machineId, b)
+
   const source: DataSource = {
     kind: 'mock',
     startT,
@@ -72,6 +80,9 @@ export function runLocalPipeline(startT: number, endT: number, t0: number): Loca
     stopEvents: () => stops,
     slowEvents: () => slows,
     spc: (mid) => spc.get(mid) ?? [],
+    riskSeries: (mid) => predictive.riskSeries(mid),
+    notifications: () => predictive.notifications(),
+    setNotificationStatus: (id, st) => predictive.setStatus(id, st, startT + n * BUCKET_MS),
     subscribe: () => () => {},
   }
   return { source, output: out, truth }

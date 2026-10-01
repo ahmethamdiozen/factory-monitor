@@ -19,7 +19,9 @@
     "sim:reset": "npm run sim -- --reset",
     "dev:demo": "vite --mode demo",
     "build:demo": "tsc -b && vite build --mode demo",
-    "preview:demo": "vite preview --mode demo"
+    "preview:demo": "vite preview --mode demo",
+    "ml:dataset": "tsx --tsconfig server/tsconfig.json server/ml/exportDataset.ts",
+    "ml:train": "node -e \"process.exit(require('node:child_process').spawnSync(process.platform==='win32'?'ml/.venv/Scripts/python':'ml/.venv/bin/python',['ml/train.py'],{stdio:'inherit'}).status)\""
   },
   "dependencies": {
     "@ag-grid-community/locale": "^36.2.0",

@@ -70,7 +70,8 @@ if (existsSync(STATE_FILE) && lastSampleT !== null) {
 } else {
   if (lastSampleT === null) await wipe(pool) // yarım kalmış bir kurulumu temizle
   const t0 = alignBucket(Date.now())
-  state = { t0, startT: t0 - DAY }
+  // 48 saat: öngörücü bakımın 24 saatlik pencereleri ilk andan dolu olsun
+  state = { t0, startT: t0 - 2 * DAY }
   mkdirSync(dirname(STATE_FILE), { recursive: true })
   writeFileSync(STATE_FILE, JSON.stringify(state, null, 2))
 }
@@ -79,6 +80,7 @@ await seedReference(pool, state.t0)
 await ensureAssignments(pool, state.startT - DAY, Date.now() + 7 * DAY)
 
 say(`başlangıç ${new Date(state.t0).toLocaleString('tr-TR')} · hikâyeler bu ana göre kurgulandı`)
+if (Date.now() - state.startT > 3 * DAY) say('not: simülatör uzun süredir çalışıyor; sunum öncesi `npm run sim:reset` önerilir')
 
 const sims = MACHINES.map((m, idx) => ({ sim: new MachineSim(m, idx, state.t0), rec: new PlcRecorder(m) }))
 let i = 0

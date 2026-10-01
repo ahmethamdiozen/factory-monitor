@@ -32,6 +32,7 @@ export interface ProcessRow {
   feedPct: number
   toolCycleCount: number
   materialLot: string
+  motorCurrentA: number
 }
 
 export interface QualityRow {

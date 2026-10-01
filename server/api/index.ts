@@ -36,7 +36,7 @@ const seriesStmt = db.prepare('SELECT machine_id, t, state, down_reason, slow_re
 app.get<{ Querystring: { since?: string } }>('/api/series', async (req, reply) => {
   const wm = kvGet<number>(db, 'watermark')
   if (!wm) return reply.code(503).send({ error: 'Henüz veri yok' })
-  const since = req.query.since ? Number(req.query.since) : wm - 30 * HOUR
+  const since = req.query.since ? Number(req.query.since) : wm - 50 * HOUR
   const rows = seriesStmt.all(since, wm) as { machine_id: string; t: number; state: number; down_reason: number; slow_reason: number; speed: number; ok: number; nok: number }[]
   const machines: Record<string, { t: number[]; state: number[]; down: number[]; slow: number[]; speed: number[]; ok: number[]; nok: number[] }> = {}
   for (const r of rows) {
@@ -71,6 +71,45 @@ const spcStmt = db.prepare('SELECT machine_id, t, mean, range FROM spc_subgroup 
 app.get<{ Querystring: { since?: string } }>('/api/spc', async (req) => {
   const rows = spcStmt.all(Number(req.query.since ?? 0)) as { machine_id: string; t: number; mean: number; range: number }[]
   return { rows: rows.map((r) => ({ machineId: r.machine_id, t: r.t, mean: r.mean, range: r.range })) }
+})
+
+// ---------- Öngörücü bakım ----------
+const riskStmt = db.prepare('SELECT machine_id, t, risk, level, factors FROM risk WHERE t >= ? ORDER BY t')
+app.get<{ Querystring: { since?: string } }>('/api/risk', async (req) => {
+  const since = Number(req.query.since ?? 0) || Date.now() - 50 * HOUR
+  const rows = riskStmt.all(since) as { machine_id: string; t: number; risk: number; level: string; factors: string }[]
+  return { points: rows.map((r) => ({ machineId: r.machine_id, t: r.t, risk: r.risk, level: r.level, factors: JSON.parse(r.factors) })) }
+})
+
+const notifStmt = db.prepare('SELECT * FROM notification WHERE t >= ? ORDER BY t DESC')
+app.get('/api/notifications', async () => {
+  const rows = notifStmt.all(Date.now() - 7 * 24 * HOUR) as Record<string, unknown>[]
+  return {
+    notifications: rows.map((r) => ({
+      id: r.id,
+      t: r.t,
+      machineId: r.machine_id,
+      lineId: r.line_id,
+      title: r.title,
+      message: r.message,
+      recipients: JSON.parse(r.recipients as string),
+      risk: r.risk,
+      factors: JSON.parse(r.factors as string),
+      status: r.status,
+      statusAt: r.status_at,
+      failureAt: r.failure_at,
+    })),
+  }
+})
+
+const STATUSES = new Set(['new', 'read', 'planned', 'closed'])
+const setStatusStmt = db.prepare('UPDATE notification SET status = ?, status_at = ? WHERE id = ?')
+app.post<{ Params: { id: string }; Body: { status?: string } }>('/api/notifications/:id', async (req, reply) => {
+  const status = req.body?.status
+  if (!status || !STATUSES.has(status)) return reply.code(400).send({ error: 'Geçersiz durum' })
+  const r = setStatusStmt.run(status, Date.now(), req.params.id)
+  if (r.changes === 0) return reply.code(404).send({ error: 'Bildirim bulunamadı' })
+  return { ok: true }
 })
 
 // ---------- Sağlık ----------

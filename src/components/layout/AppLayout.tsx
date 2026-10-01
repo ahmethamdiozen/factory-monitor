@@ -2,6 +2,7 @@ import { Activity, Loader2, Maximize2, Minimize2, Moon, Sun, WifiOff } from 'luc
 import { useEffect, useState } from 'react'
 import { Outlet, useLocation } from 'react-router-dom'
 import { ConnectionPill } from '@/components/layout/ConnectionPill'
+import { NotificationBell } from '@/components/layout/NotificationBell'
 import { TopNav } from '@/components/layout/TopNav'
 import { Button } from '@/components/ui/button'
 import { SHIFTS, shiftOf } from '@/data/registry'
@@ -88,6 +89,7 @@ export function AppLayout() {
                 <Maximize2 className="size-4" />
               </Button>
             )}
+            <NotificationBell />
             <Button variant="ghost" size="icon" onClick={toggleTheme} aria-label="Temayı değiştir" title="Tema">
               {theme === 'dark' ? <Sun className="size-4" /> : <Moon className="size-4" />}
             </Button>

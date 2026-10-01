@@ -45,3 +45,7 @@ Thumbs.db
 
 # Collector'ın yerel deposu ve simülatör durumu
 /data/
+
+# Python sanal ortamı (model eğitimi)
+ml/.venv/
+__pycache__/

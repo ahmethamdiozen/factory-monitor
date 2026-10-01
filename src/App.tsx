@@ -8,6 +8,7 @@ import Quality from '@/pages/Quality'
 import People from '@/pages/People'
 import Events from '@/pages/Events'
 import Guide from '@/pages/Guide'
+import Predictive from '@/pages/Predictive'
 import MachinePicker from '@/pages/operator/MachinePicker'
 import OperatorScreen from '@/pages/operator/OperatorScreen'
 import LinePicker from '@/pages/foreman/LinePicker'
@@ -26,6 +27,7 @@ export default function App() {
             <Route path="kalite" element={<Quality />} />
             <Route path="personel" element={<People />} />
             <Route path="olaylar" element={<Events />} />
+            <Route path="ongorucu-bakim" element={<Predictive />} />
             <Route path="metrikler" element={<Guide />} />
           </Route>
           <Route path="makine-ekrani" element={<MachinePicker />} />

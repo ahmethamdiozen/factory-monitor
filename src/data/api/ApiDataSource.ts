@@ -4,6 +4,7 @@ import { createSeries, putBuckets } from '@/data/series'
 import type { BucketRow } from '@/data/series'
 import { BUCKET_MS } from '@/lib/types'
 import type { FactoryMeta, MachineSeries, SlowEvent, SpcPoint, StopEvent } from '@/lib/types'
+import type { MaintNotification, NotificationStatus, RiskPoint } from '@/ml/types'
 
 /**
  * Gerçek veri hattından (SQL Server → Collector → SQLite → API) beslenen veri kaynağı.
@@ -12,7 +13,7 @@ import type { FactoryMeta, MachineSeries, SlowEvent, SpcPoint, StopEvent } from 
  */
 
 const POLL_MS = 5000
-const HISTORY_MS = 30 * 3600 * 1000
+const HISTORY_MS = 50 * 3600 * 1000
 /** Veri bu kadar geride kalırsa (simülatör/collector durmuş) "bayat" sayılır */
 const STALE_AFTER_MS = 30 * 1000
 
@@ -54,6 +55,9 @@ export class ApiDataSource implements LiveSource {
   private slowList: SlowEvent[] = []
   private spcByMachine = new Map<string, SpcPoint[]>()
   private lastSpcT = 0
+  private risk = new Map<string, RiskPoint[]>()
+  private lastRiskT = 0
+  private notes: MaintNotification[] = []
   private eventCursor = 0
   private metaLoadedAt = 0
   private listeners = new Set<() => void>()
@@ -103,9 +107,12 @@ export class ApiDataSource implements LiveSource {
     this.spcByMachine.clear()
     this.eventCursor = 0
     this.lastSpcT = 0
+    this.risk.clear()
+    this.lastRiskT = 0
     this.applySeries(res)
     await this.loadEvents()
     await this.loadSpc()
+    await this.loadPredictive()
     this.ready = true
   }
 
@@ -119,6 +126,7 @@ export class ApiDataSource implements LiveSource {
     this.applySeries(res)
     await this.loadEvents()
     await this.loadSpc()
+    await this.loadPredictive()
   }
 
   private applySeries(res: SeriesResponse): void {
@@ -173,6 +181,30 @@ export class ApiDataSource implements LiveSource {
   slowEvents(): SlowEvent[] {
     return this.slowList
   }
+  private async loadPredictive(): Promise<void> {
+    const res = await getJson<{ points: RiskPoint[] }>(`/api/risk?since=${this.lastRiskT + 1}`)
+    for (const p of res.points) {
+      const list = this.risk.get(p.machineId) ?? []
+      list.push(p)
+      this.risk.set(p.machineId, list)
+      this.lastRiskT = Math.max(this.lastRiskT, p.t)
+    }
+    this.notes = (await getJson<{ notifications: MaintNotification[] }>('/api/notifications')).notifications
+  }
+
+  riskSeries(id: string): RiskPoint[] {
+    return this.risk.get(id) ?? []
+  }
+  notifications(): MaintNotification[] {
+    return this.notes
+  }
+  setNotificationStatus(id: string, status: NotificationStatus): void {
+    // İyimser güncelleme; sunucu cevabı bir sonraki turda gelir
+    this.notes = this.notes.map((n) => (n.id === id ? { ...n, status, statusAt: Date.now() } : n))
+    this.emit()
+    void fetch(`/api/notifications/${encodeURIComponent(id)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ status }) }).catch(() => {})
+  }
+
   spc(id: string): SpcPoint[] {
     return this.spcByMachine.get(id) ?? []
   }

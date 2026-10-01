@@ -16,6 +16,9 @@ import { log } from '../shared/env'
 import { connect, sql } from '../shared/mssql'
 import { kvGet, kvSet, openSqlite } from '../shared/sqlite'
 import type { CollectorHealth } from '../shared/sqlite'
+import { RiskEngine } from '@/ml/riskEngine'
+import { Notifier } from '@/ml/notify'
+import type { FeatureBucket } from '@/ml/features'
 
 const POLL_MS = 5000
 const BATCH = 20000
@@ -130,7 +133,7 @@ function transformerFor(machineId: string): MachineTransformer {
 
 // ---------- SQLite yazma ----------
 const stmt = {
-  bucket: db.prepare(`INSERT OR REPLACE INTO bucket (machine_id, t, state, down_reason, slow_reason, speed, ok, nok, temp, vib, feed) VALUES (?,?,?,?,?,?,?,?,?,?,?)`),
+  bucket: db.prepare(`INSERT OR REPLACE INTO bucket (machine_id, t, state, down_reason, slow_reason, speed, ok, nok, temp, vib, feed, cur) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`),
   stop: db.prepare(`INSERT INTO stop_event (machine_id, state, reason_id, start, end, updated_at) VALUES (?,?,?,?,?,?)
     ON CONFLICT (machine_id, start) DO UPDATE SET state = excluded.state, reason_id = excluded.reason_id, end = excluded.end, updated_at = excluded.updated_at`),
   slow: db.prepare(`INSERT INTO slow_event (machine_id, reason_id, start, end, min_speed, updated_at) VALUES (?,?,?,?,?,?)
@@ -140,6 +143,52 @@ const stmt = {
     ON CONFLICT (tbl) DO UPDATE SET last_id = excluded.last_id, last_sync_at = excluded.last_sync_at, rows_total = sync_state.rows_total + excluded.rows_total`),
   lastIds: db.prepare('SELECT tbl, last_id FROM sync_state'),
   lastBucket: db.prepare('SELECT machine_id, MAX(t) AS t FROM bucket GROUP BY machine_id'),
+  risk: db.prepare('INSERT OR REPLACE INTO risk (machine_id, t, risk, level, factors) VALUES (?,?,?,?,?)'),
+  notifIns: db.prepare('INSERT OR IGNORE INTO notification (id, t, machine_id, line_id, title, message, recipients, risk, factors) VALUES (?,?,?,?,?,?,?,?,?)'),
+  notifFail: db.prepare('UPDATE notification SET failure_at = ? WHERE id = ? AND failure_at IS NULL'),
+}
+
+// ---------- Öngörücü bakım ----------
+// Risk motoru türetilmiş durumdur: açılışta SQLite'taki dilimlerden yeniden kurulur (anlık görüntü gerekmez).
+// Bildirim durumları (okundu / bakım planlandı) INSERT OR IGNORE sayesinde yeniden kurulumda korunur.
+let engine: RiskEngine | null = null
+let notifier: Notifier | null = null
+
+function feedPredictive(machineId: string, b: FeatureBucket): void {
+  const ev = engine!.add(machineId, b)
+  if (!ev) return
+  if (ev.failureAt !== undefined) {
+    const c = notifier!.onFailure(machineId, ev.failureAt)
+    if (c?.confirmed) stmt.notifFail.run(c.confirmed.failureAt, c.confirmed.id)
+  }
+  if (ev.point) {
+    const p = ev.point
+    stmt.risk.run(p.machineId, p.t, p.risk, p.level, JSON.stringify(p.factors))
+    const c = notifier!.onRisk(p)
+    if (c?.created) {
+      const n = c.created
+      stmt.notifIns.run(n.id, n.t, n.machineId, n.lineId, n.title, n.message, JSON.stringify(n.recipients), n.risk, JSON.stringify(n.factors))
+    }
+  }
+}
+
+function initPredictive(): void {
+  const lines = ref!.meta.lines
+  const ms = ref!.meta.machines.map((m) => ({ id: m.id, code: m.code, name: m.name, lineId: m.lineId, lineShort: lines.find((l) => l.id === m.lineId)?.short ?? m.lineId }))
+  engine = new RiskEngine(ms)
+  notifier = new Notifier(ms)
+  const rows = db.prepare('SELECT machine_id, t, state, down_reason, speed, temp, vib, cur FROM bucket ORDER BY t, machine_id').all() as {
+    machine_id: string; t: number; state: number; down_reason: number; speed: number; temp: number; vib: number; cur: number
+  }[]
+  db.exec('BEGIN')
+  try {
+    for (const r of rows) feedPredictive(r.machine_id, { t: r.t, state: r.state, downReason: r.down_reason, speed: r.speed, temp: r.temp, vib: r.vib, cur: r.cur })
+    db.exec('COMMIT')
+  } catch (e) {
+    db.exec('ROLLBACK')
+    throw e
+  }
+  if (rows.length) say(`öngörücü bakım: ${rows.length.toLocaleString('tr-TR')} dilimden risk geçmişi kuruldu`)
 }
 
 let updSeq = 0
@@ -149,10 +198,11 @@ function persist(out: TransformOutput, ids: Record<string, { lastId: number; row
   const upd = nextUpd()
   db.exec('BEGIN')
   try {
-    for (const b of out.buckets) stmt.bucket.run(b.machineId, b.t, b.state, b.downReason, b.slowReason, b.speed, b.ok, b.nok, b.temp, b.vib, b.feed)
+    for (const b of out.buckets) stmt.bucket.run(b.machineId, b.t, b.state, b.downReason, b.slowReason, b.speed, b.ok, b.nok, b.temp, b.vib, b.feed, b.cur)
     for (const e of out.stops) stmt.stop.run(e.machineId, e.state, e.reasonId, e.start, e.end, upd)
     for (const e of out.slows) stmt.slow.run(e.machineId, e.reasonId, e.start, e.end, e.minSpeed, upd)
     for (const g of out.spc) stmt.spc.run(g.machineId, g.t, g.mean, g.range)
+    for (const b of out.buckets) feedPredictive(b.machineId, b)
     for (const [tbl, v] of Object.entries(ids)) stmt.sync.run(tbl, v.lastId, Date.now(), v.rows)
     for (const [id, tr] of transformers) kvSet(db, `tr:${id}`, tr.snapshot())
     const rows = stmt.lastBucket.all() as { machine_id: string; t: number }[]
@@ -172,8 +222,10 @@ function lastIds(): Record<string, number> {
 
 function rebuild(reason: string): void {
   say(`SQLite yeniden kuruluyor: ${reason}`)
-  db.exec('DELETE FROM bucket; DELETE FROM stop_event; DELETE FROM slow_event; DELETE FROM spc_subgroup; DELETE FROM sync_state; DELETE FROM kv')
+  db.exec('DELETE FROM bucket; DELETE FROM stop_event; DELETE FROM slow_event; DELETE FROM spc_subgroup; DELETE FROM sync_state; DELETE FROM kv; DELETE FROM risk; DELETE FROM notification')
   transformers.clear()
+  engine = null
+  notifier = null
   kvSet(db, 'datasetId', Date.now().toString(36))
 }
 
@@ -190,7 +242,7 @@ async function pullOnce(p: ConnectionPool): Promise<{ counters: number; total: n
   const q = (text: string, lastId: number) => p.request().input('last', sql.BigInt, lastId).input('maxT', sql.DateTime2(3), maxT).query(text)
 
   // Sayaçlar ilk okunur: bir sayaç satırı görünüyorsa aynı işlemdeki diğer satırlar da görünür
-  const process = (await q('SELECT Id, MachineId, SampleTimeUtc, CycleTimeMs, TemperatureC, VibrationMmS, FeedPct, ToolCycleCount, MaterialLot FROM dbo.ProcessValues WHERE Id > @last AND SampleTimeUtc <= @maxT ORDER BY Id', last.ProcessValues)).recordset
+  const process = (await q('SELECT Id, MachineId, SampleTimeUtc, CycleTimeMs, TemperatureC, VibrationMmS, FeedPct, ToolCycleCount, MaterialLot, MotorCurrentA FROM dbo.ProcessValues WHERE Id > @last AND SampleTimeUtc <= @maxT ORDER BY Id', last.ProcessValues)).recordset
   const events = (await q('SELECT EventId, MachineId, EventTimeUtc, StatusCode, ReasonCode FROM dbo.MachineEvents WHERE EventId > @last AND EventTimeUtc < @maxT ORDER BY EventId', last.MachineEvents)).recordset
   const quality = (await q('SELECT Id, MachineId, SampleTimeUtc, Characteristic, SubgroupNo, SampleIdx, Value, Nominal, Lsl, Usl FROM dbo.QualitySamples WHERE Id > @last AND SampleTimeUtc <= @maxT ORDER BY Id', last.QualitySamples)).recordset
 
@@ -210,6 +262,7 @@ async function pullOnce(p: ConnectionPool): Promise<{ counters: number; total: n
       feedPct: Number(r.FeedPct),
       toolCycleCount: r.ToolCycleCount,
       materialLot: r.MaterialLot,
+      motorCurrentA: r.MotorCurrentA === null ? 0 : Number(r.MotorCurrentA),
     }
     pv.set(`${row.machineId}|${row.sampleT}`, row)
   }
@@ -267,6 +320,7 @@ async function poll(): Promise<void> {
       rebuild('SQL Server verisi sıfırlanmış')
       kvSet(db, 'meta', ref.meta)
     }
+    if (!engine) initPredictive()
 
     let total = 0
     for (;;) {
@@ -289,6 +343,7 @@ async function poll(): Promise<void> {
       db.prepare('DELETE FROM stop_event WHERE end IS NOT NULL AND end < ?').run(cut)
       db.prepare('DELETE FROM slow_event WHERE end IS NOT NULL AND end < ?').run(cut)
       db.prepare('DELETE FROM spc_subgroup WHERE t < ?').run(cut)
+      db.prepare('DELETE FROM risk WHERE t < ?').run(cut)
     }
   } catch (e) {
     health.error = (e as Error).message.split('\n')[0]
