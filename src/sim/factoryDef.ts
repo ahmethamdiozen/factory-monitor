@@ -1,4 +1,4 @@
-import type { DowntimeReason, Line, Machine, Person, Shift, ShiftId, SlowReason, SpecLimits } from '@/lib/types'
+import type { DowntimeReason, Line, Machine, MachineType, Person, Shift, ShiftId, SlowReason, SpecLimits } from '@/lib/types'
 import { mulberry32, pick } from '@/lib/rng'
 
 export const SHIFTS: Shift[] = [
@@ -8,7 +8,8 @@ export const SHIFTS: Shift[] = [
 ]
 
 /**
- * Statik fabrika tanımı. SADECE simülatörün SQL Server'a yazdığı tohum verisidir ve
+ * Statik tesis tanımı: jet motoru parçaları üreten bir atölye (CNC talaşlı imalat, ısıl işlem
+ * ve kaplama, ölçüm ve kalite). SADECE simülatörün SQL Server'a yazdığı tohum verisidir ve
  * testlerde kullanılır. Arayüz bu dosyayı değil, API'den doldurulan src/data/registry.ts'i kullanır.
  */
 
@@ -16,75 +17,90 @@ export const SHIFTS: Shift[] = [
 export const DAY_START_HOUR = 6
 
 export const LINES: Line[] = [
-  { id: 'L1', name: 'Hat 1 · Plastik Enjeksiyon', short: 'Hat 1' },
-  { id: 'L2', name: 'Hat 2 · Montaj', short: 'Hat 2' },
-  { id: 'L3', name: 'Hat 3 · Paketleme', short: 'Hat 3' },
+  { id: 'L1', name: 'Hücre 1 · Döner Parçalar', short: 'Hücre 1' },
+  { id: 'L2', name: 'Hücre 2 · Blisk & Muhafaza', short: 'Hücre 2' },
+  { id: 'L3', name: 'Hücre 3 · Isıl İşlem & Kaplama', short: 'Hücre 3' },
+  { id: 'L4', name: 'Hücre 4 · Ölçüm & Kalite', short: 'Hücre 4' },
 ]
 
 export const DOWNTIME_REASONS: DowntimeReason[] = [
   { id: 0, label: '—', category: 'planned', planned: false },
-  { id: 1, label: 'Motor / hidrolik arızası', category: 'breakdown', planned: false },
-  { id: 2, label: 'Sensör / PLC hatası', category: 'breakdown', planned: false },
+  { id: 1, label: 'Mekanik / hidrolik arıza', category: 'breakdown', planned: false },
+  { id: 2, label: 'Kontrol / elektrik arızası', category: 'breakdown', planned: false },
   { id: 3, label: 'Takım kırılması', category: 'breakdown', planned: false },
-  { id: 4, label: 'Ürün / kalıp değişimi', category: 'changeover', planned: false },
-  { id: 5, label: 'Ayar ve ısınma', category: 'changeover', planned: false },
-  { id: 6, label: 'Malzeme bekleme', category: 'material', planned: false },
+  { id: 4, label: 'Program / fikstür değişimi', category: 'changeover', planned: false },
+  { id: 5, label: 'Ayar ve ilk parça onayı', category: 'changeover', planned: false },
+  { id: 6, label: 'Malzeme / parça bekleme', category: 'material', planned: false },
   { id: 7, label: 'Operatör yok', category: 'staffing', planned: false },
   { id: 8, label: 'Planlı bakım', category: 'planned', planned: true },
-  { id: 9, label: 'Kalite kontrol durdurması', category: 'quality', planned: false },
-  { id: 10, label: 'Sıkışma / mikro duruş', category: 'microstop', planned: false },
-  { id: 11, label: 'Temizlik / hijyen', category: 'planned', planned: true },
+  { id: 9, label: 'Kalite onayı bekleme (CMM)', category: 'quality', planned: false },
+  { id: 10, label: 'Talaş temizleme / kısa alarm', category: 'microstop', planned: false },
+  { id: 11, label: 'Temizlik / 5S', category: 'planned', planned: true },
+  { id: 12, label: 'Şarj yükleme / boşaltma', category: 'changeover', planned: false },
+  // Arıza türleri (öngörücü bakımın tanıdığı)
+  { id: 13, label: 'İş mili rulmanı arızası', category: 'breakdown', planned: false },
+  { id: 14, label: 'Eksen / vidalı mil arızası', category: 'breakdown', planned: false },
+  { id: 15, label: 'Soğutma sistemi arızası', category: 'breakdown', planned: false },
+  { id: 16, label: 'Isıtıcı eleman arızası', category: 'breakdown', planned: false },
+  { id: 17, label: 'Vakum pompası arızası', category: 'breakdown', planned: false },
+  { id: 18, label: 'Tabanca / elektrot arızası', category: 'breakdown', planned: false },
+  { id: 19, label: 'Toz besleyici arızası', category: 'breakdown', planned: false },
 ]
 
 export const CATEGORY_LABEL: Record<string, string> = {
   breakdown: 'Arıza',
   changeover: 'Ayar & değişim',
-  microstop: 'Mikro duruş',
+  microstop: 'Kısa duruş',
   material: 'Malzeme / bekleme',
   staffing: 'Personel',
-  quality: 'Kalite durdurması',
+  quality: 'Kalite onayı',
   planned: 'Planlı duruş',
 }
 
 export const SLOW_REASONS: SlowReason[] = [
   { id: 0, label: '—' },
-  { id: 1, label: 'Takım / kalıp aşınması' },
-  { id: 2, label: 'Hammadde kalitesi' },
+  { id: 1, label: 'Takım aşınması' },
+  { id: 2, label: 'Malzeme partisi (sertlik)' },
   { id: 3, label: 'Operatör tecrübesi / uyum' },
   { id: 4, label: 'Yüksek sıcaklık (soğutma)' },
-  { id: 5, label: 'Durma sonrası ısınma' },
-  { id: 6, label: 'Besleme dalgalanması' },
+  { id: 5, label: 'Isınma programı (duruş sonrası)' },
+  { id: 6, label: 'İlerleme düşürüldü (titreşim / besleme)' },
   { id: 7, label: 'Neden belirlenemedi' },
 ]
 
+/** Uygunsuzluk türleri (hücre bazında, yer tutucu dağılım) */
 export const DEFECT_TYPES: Record<string, { label: string; weight: number }[]> = {
   L1: [
-    { label: 'Çapak', weight: 0.28 },
-    { label: 'Eksik dolum', weight: 0.22 },
-    { label: 'Çarpılma', weight: 0.18 },
-    { label: 'Yüzey izi / çizik', weight: 0.15 },
-    { label: 'Ölçü dışı', weight: 0.12 },
-    { label: 'Yanık / renk hatası', weight: 0.05 },
+    { label: 'Ölçü dışı', weight: 0.34 },
+    { label: 'Yüzey pürüzlülüğü', weight: 0.24 },
+    { label: 'Takım izi', weight: 0.18 },
+    { label: 'Form / konum toleransı', weight: 0.14 },
+    { label: 'Çapak', weight: 0.1 },
   ],
   L2: [
-    { label: 'Eksik parça', weight: 0.3 },
-    { label: 'Yanlış tork', weight: 0.24 },
-    { label: 'Hizalama hatası', weight: 0.2 },
-    { label: 'Bağlantı hatası', weight: 0.16 },
-    { label: 'Çizik', weight: 0.1 },
+    { label: 'Kanat profili dışı', weight: 0.3 },
+    { label: 'Ölçü dışı', weight: 0.26 },
+    { label: 'Yüzey pürüzlülüğü', weight: 0.2 },
+    { label: 'Takım izi', weight: 0.14 },
+    { label: 'Çapak', weight: 0.1 },
   ],
   L3: [
-    { label: 'Etiket hatası', weight: 0.32 },
-    { label: 'Ağırlık dışı', weight: 0.26 },
-    { label: 'Hasarlı ambalaj', weight: 0.2 },
-    { label: 'Mühür hatası', weight: 0.14 },
-    { label: 'Eksik ürün', weight: 0.08 },
+    { label: 'Sertlik dışı', weight: 0.34 },
+    { label: 'Distorsiyon', weight: 0.26 },
+    { label: 'Kaplama kalınlığı dışı', weight: 0.24 },
+    { label: 'Kaplama yapışması', weight: 0.16 },
   ],
+  L4: [{ label: 'Tekrar ölçüm', weight: 1 }],
 }
 
-const specL1 = (): SpecLimits => ({ characteristic: 'Duvar kalınlığı', unit: 'mm', nominal: 2.5, lsl: 2.4, usl: 2.6, sigma: 0.022 })
-const specL2 = (): SpecLimits => ({ characteristic: 'Sıkma torku', unit: 'Nm', nominal: 12, lsl: 11, usl: 13, sigma: 0.19 })
-const specL3 = (): SpecLimits => ({ characteristic: 'Paket ağırlığı', unit: 'g', nominal: 500, lsl: 490, usl: 510, sigma: 1.7 })
+const spec = (characteristic: string, unit: string, nominal: number, tol: number, sigma: number): SpecLimits => ({
+  characteristic,
+  unit,
+  nominal,
+  lsl: nominal - tol,
+  usl: nominal + tol,
+  sigma,
+})
 
 interface MachineDef {
   id: string
@@ -92,33 +108,50 @@ interface MachineDef {
   name: string
   model: string
   lineId: string
+  type: MachineType
   product: string
-  idealRate: number
+  partNumber: string
+  operation: string
+  /** İdeal çevrim süresi (saat); fırında bir şarj */
+  cycleH: number
+  /** Bir çevrimde çıkan parça (fırın şarjı) */
+  batchSize: number
   spec: SpecLimits
 }
 
 const DEFS: MachineDef[] = [
-  { id: 'M01', code: 'ENJ-01', name: 'Enjeksiyon Presi 1', model: 'EP-350', lineId: 'L1', product: 'Kapak 40 mm', idealRate: 1.2, spec: specL1() },
-  { id: 'M02', code: 'ENJ-02', name: 'Enjeksiyon Presi 2', model: 'EP-350', lineId: 'L1', product: 'Gövde 40 mm', idealRate: 1.5, spec: specL1() },
-  { id: 'M03', code: 'ENJ-03', name: 'Enjeksiyon Presi 3', model: 'EP-450', lineId: 'L1', product: 'Kapak 60 mm', idealRate: 1.2, spec: specL1() },
-  { id: 'M04', code: 'ENJ-04', name: 'Enjeksiyon Presi 4', model: 'EP-450', lineId: 'L1', product: 'Gövde 60 mm', idealRate: 1.8, spec: specL1() },
-  { id: 'M05', code: 'MNT-01', name: 'Montaj İstasyonu 1', model: 'MS-20', lineId: 'L2', product: 'Valf grubu A', idealRate: 0.8, spec: specL2() },
-  { id: 'M06', code: 'MNT-02', name: 'Montaj İstasyonu 2', model: 'MS-20', lineId: 'L2', product: 'Valf grubu A', idealRate: 0.8, spec: specL2() },
-  { id: 'M07', code: 'MNT-03', name: 'Montaj İstasyonu 3', model: 'MS-30', lineId: 'L2', product: 'Valf grubu B', idealRate: 1.0, spec: specL2() },
-  { id: 'M08', code: 'MNT-04', name: 'Montaj İstasyonu 4', model: 'MS-30', lineId: 'L2', product: 'Valf grubu B', idealRate: 1.0, spec: specL2() },
-  { id: 'M09', code: 'PKT-01', name: 'Paketleme 1', model: 'PK-100', lineId: 'L3', product: 'Kutu 500 g', idealRate: 2.4, spec: specL3() },
-  { id: 'M10', code: 'PKT-02', name: 'Paketleme 2', model: 'PK-100', lineId: 'L3', product: 'Kutu 500 g', idealRate: 2.4, spec: specL3() },
-  { id: 'M11', code: 'PKT-03', name: 'Paketleme 3', model: 'PK-200', lineId: 'L3', product: 'Kutu 1 kg', idealRate: 3.0, spec: specL3() },
-  { id: 'M12', code: 'PKT-04', name: 'Paketleme 4', model: 'PK-200', lineId: 'L3', product: 'Kutu 1 kg', idealRate: 3.0, spec: specL3() },
+  { id: 'M01', code: 'TRN-01', name: 'Dikey Torna (VTL) 1', model: 'VTL-1600', lineId: 'L1', type: 'cnc', product: 'HPT türbin diski', partNumber: 'HPT-D-1101', operation: 'Op 10', cycleH: 3, batchSize: 1, spec: spec('Göbek iç çapı', 'mm', 120, 0.02, 0.004) },
+  { id: 'M02', code: 'TRN-02', name: 'Dikey Torna (VTL) 2', model: 'VTL-1600', lineId: 'L1', type: 'cnc', product: 'HPC kompresör diski', partNumber: 'HPC-D-2204', operation: 'Op 10', cycleH: 2.5, batchSize: 1, spec: spec('Göbek iç çapı', 'mm', 96, 0.02, 0.0045) },
+  { id: 'M03', code: 'TRN-03', name: 'CNC Torna 3', model: 'CT-800', lineId: 'L1', type: 'cnc', product: 'LPT ana şaft', partNumber: 'LPT-S-3010', operation: 'Op 20', cycleH: 4, batchSize: 1, spec: spec('Yatak oturma çapı', 'mm', 55, 0.01, 0.002) },
+  { id: 'M04', code: 'TAS-01', name: 'Silindirik Taşlama 1', model: 'CG-1000', lineId: 'L1', type: 'grinder', product: 'LPT ana şaft', partNumber: 'LPT-S-3010', operation: 'Op 40', cycleH: 1.5, batchSize: 1, spec: spec('Yatak yüzeyi çapı', 'mm', 54.99, 0.005, 0.0009) },
+  { id: 'M05', code: 'FRZ-01', name: '5 Eksen Freze 1', model: '5X-1250', lineId: 'L2', type: 'cnc', product: 'Fan bliski', partNumber: 'FAN-B-4001', operation: 'Op 30', cycleH: 8, batchSize: 1, spec: spec('Kanat profil kalınlığı', 'mm', 2.4, 0.05, 0.009) },
+  { id: 'M06', code: 'FRZ-02', name: '5 Eksen Freze 2', model: '5X-1250', lineId: 'L2', type: 'cnc', product: 'Kompresör bliski', partNumber: 'HPC-B-4102', operation: 'Op 30', cycleH: 6, batchSize: 1, spec: spec('Kanat profil kalınlığı', 'mm', 1.8, 0.04, 0.007) },
+  { id: 'M07', code: 'FRZ-03', name: '5 Eksen Freze 3', model: '5X-1600', lineId: 'L2', type: 'cnc', product: 'Yanma odası muhafazası', partNumber: 'CMB-C-5003', operation: 'Op 20', cycleH: 5, batchSize: 1, spec: spec('Flanş kalınlığı', 'mm', 6, 0.05, 0.009) },
+  { id: 'M08', code: 'FRZ-04', name: '5 Eksen Freze 4', model: '5X-1600', lineId: 'L2', type: 'cnc', product: 'Türbin muhafazası', partNumber: 'TRB-C-5104', operation: 'Op 20', cycleH: 5, batchSize: 1, spec: spec('Montaj flanşı çapı', 'mm', 820, 0.08, 0.014) },
+  { id: 'M09', code: 'FRN-01', name: 'Vakum Fırını 1', model: 'VF-1200', lineId: 'L3', type: 'furnace', product: 'Disk ve şaftlar · çözeltiye alma', partNumber: 'ISL-ÇZ-01', operation: 'Op 50', cycleH: 10, batchSize: 6, spec: spec('Sertlik', 'HRC', 30, 4, 0.7) },
+  { id: 'M10', code: 'FRN-02', name: 'Vakum Fırını 2', model: 'VF-1200', lineId: 'L3', type: 'furnace', product: 'Disk ve şaftlar · yaşlandırma', partNumber: 'ISL-YŞ-02', operation: 'Op 60', cycleH: 12, batchSize: 6, spec: spec('Sertlik', 'HRC', 42, 3, 0.5) },
+  { id: 'M11', code: 'KPL-01', name: 'Plazma Sprey Kaplama', model: 'PS-300', lineId: 'L3', type: 'coating', product: 'Muhafaza · termal bariyer kaplama', partNumber: 'KPL-TBC-01', operation: 'Op 70', cycleH: 1.5, batchSize: 1, spec: spec('Kaplama kalınlığı', 'µm', 300, 40, 7) },
+  { id: 'M12', code: 'CMM-01', name: 'Koordinat Ölçüm Makinesi', model: 'CMM-1210', lineId: 'L4', type: 'cmm', product: 'Son ölçüm (tüm parçalar)', partNumber: 'ÖLÇ-SON', operation: 'Op 90', cycleH: 1, batchSize: 1, spec: spec('Referans bilye sapması', 'µm', 0, 2, 0.4) },
 ]
 
-/** Günlük hedef = ideal hız × 86 400 sn × planlanan verimlilik (%72) */
+/** Günlük hedef = ideal çevrim kapasitesi × planlanan verimlilik (%72), tam sayı parça */
 const PLANNED_ATTAINMENT = 0.72
 
 export const MACHINES: Machine[] = DEFS.map((d, i) => ({
-  ...d,
-  orderNo: `İE-${24100 + i * 7}`,
-  dailyTarget: Math.round((d.idealRate * 86400 * PLANNED_ATTAINMENT) / 100) * 100,
+  id: d.id,
+  code: d.code,
+  name: d.name,
+  model: d.model,
+  lineId: d.lineId,
+  type: d.type,
+  product: d.product,
+  partNumber: d.partNumber,
+  operation: d.operation,
+  batchSize: d.batchSize,
+  orderNo: `İE-${26100 + i * 7}`,
+  idealRate: d.batchSize / (d.cycleH * 3600),
+  dailyTarget: Math.max(1, Math.round(((d.batchSize * 24) / d.cycleH) * PLANNED_ATTAINMENT)),
+  spec: d.spec,
 }))
 
 export const MACHINE_BY_ID: Record<string, Machine> = Object.fromEntries(MACHINES.map((m) => [m.id, m]))
@@ -183,7 +216,7 @@ function makePeople(): Person[] {
 
 export const PEOPLE: Person[] = makePeople()
 
-/** Hikâye: B vardiyasında Montaj 4'teki operatör yeni başlamış (yavaşlık nedeni "operatör tecrübesi"). */
+/** Hikâye: B vardiyasında FRZ-04'teki operatör yeni başlamış (yavaşlık nedeni "operatör tecrübesi"). */
 const rookie = PEOPLE.find((p) => p.id === 'O-B-M08')
 if (rookie) rookie.experienceYears = 0.4
 

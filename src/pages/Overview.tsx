@@ -48,7 +48,7 @@ export default function Overview() {
     () =>
       LINES.map((l) => ({
         line: l,
-        data: hourlyKpi(machinesOfLine(l.id), now, 12).map((h) => [h.t1 === h.t0 ? h.t0 : h.t0 + 1800e3, h.kpi.oee]),
+        data: hourlyKpi(machinesOfLine(l.id), now, 12, 2).map((h) => [h.t0 + 3600e3, h.kpi.oee]),
       })),
     [now],
   )
@@ -64,7 +64,7 @@ export default function Overview() {
         trigger: 'axis',
         valueFormatter: (v: number) => `%${(v * 100).toFixed(1)}`,
       },
-      xAxis: { ...timeAxisStyle(t), min: now - 11.5 * 3600e3 - (now % 3600e3), max: now, axisLabel: { color: t.fg3, formatter: (v: number) => hhmm(v), hideOverlap: true } },
+      xAxis: { ...timeAxisStyle(t), min: now - 24 * 3600e3, max: now, axisLabel: { color: t.fg3, formatter: (v: number) => hhmm(v), hideOverlap: true } },
       yAxis: { ...valueAxisStyle(t), min: 0.4, max: 1, axisLabel: { color: t.fg3, formatter: (v: number) => `%${Math.round(v * 100)}` } },
       series: [
         ...trend.map((d, i) => ({
@@ -109,7 +109,7 @@ export default function Overview() {
           <Meter value={okTotal / targetTotal} marker={elapsed} className="mt-1" color={projectedTotal < targetTotal * 0.98 ? 'var(--serious)' : 'var(--series-1)'} />
         </StatTile>
 
-        <StatTile label="Üretim · bugün" value={num(okTotal)} unit="adet" sub={<>NOK <b className="tnum text-fg">{num(f.nok)}</b> · hurda <b className="tnum text-fg">{pct(1 - f.quality, 2)}</b></>} />
+        <StatTile label="Üretim · bugün" value={num(okTotal)} unit="parça" sub={<>Uygunsuz <b className="tnum text-fg">{num(f.nok)}</b> · ilk geçiş verimi <b className="tnum text-fg">{pct(f.quality, 1)}</b></>} />
 
         <StatTile label="Makine durumu" value={`${snap.counts.running}/${MACHINES.length}`} unit="çalışıyor">
           <div className="mt-1 flex h-2 w-full gap-0.5 overflow-hidden rounded-full" role="img" aria-label="Makine durum dağılımı">
@@ -137,7 +137,7 @@ export default function Overview() {
               <div className="mb-2 flex items-baseline gap-3">
                 <h2 className="text-[13px] font-semibold">{l.name}</h2>
                 <span className="text-xs text-fg-2">
-                  Hat OEE <b className="tnum text-fg">{pct(lk.oee, 1)}</b> · {list.filter((m) => m.state === 0).length}/{list.length} çalışıyor
+                  Hücre OEE <b className="tnum text-fg">{pct(lk.oee, 1)}</b> · {list.filter((m) => m.state === 0).length}/{list.length} çalışıyor
                 </span>
               </div>
               <div className="grid grid-cols-4 gap-4">
@@ -152,9 +152,9 @@ export default function Overview() {
 
       <section className="grid grid-cols-3 gap-4">
         <Card className="col-span-2">
-          <CardHeader title="Hat bazlı OEE trendi" subtitle="Son 12 saat · saatlik" />
+          <CardHeader title="Hücre bazlı OEE trendi" subtitle="Son 24 saat · 2 saatlik dilimler" />
           <div className="px-2 pb-2 pt-1">
-            <EChart option={trendOption} height={250} label="Hatlara göre saatlik OEE çizgi grafiği" />
+            <EChart option={trendOption} height={250} label="Hücrelere göre OEE çizgi grafiği" />
           </div>
         </Card>
         <Card className="flex flex-col">

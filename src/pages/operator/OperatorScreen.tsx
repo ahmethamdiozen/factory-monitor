@@ -1,14 +1,15 @@
 import { AlertTriangle, CheckCircle2, Clock, HeartPulse, Info, OctagonAlert, Play, RefreshCw, Square, Wrench } from 'lucide-react'
 import { useMemo } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { HourBars } from '@/components/charts/HourBars'
+import { ShiftTimeline, ShiftTimelineLegend } from '@/components/charts/ShiftTimeline'
 import { Avatar } from '@/components/machine/OperatorChip'
 import { MACHINE_BY_ID, REASON_BY_ID } from '@/data/registry'
 import { LEVEL_STYLE, activeRisk } from '@/data/predictiveView'
 import { useSnapshot } from '@/data/snapshot'
-import { SLOW_ADVICE, hourlyBars, lastHourQuality, operatorTodos, shiftProgress, shiftWindowAt } from '@/data/shiftView'
+import { SLOW_ADVICE, completions, operatorTodos, shiftProgress, shiftWindowAt, stateTrack } from '@/data/shiftView'
+import { source } from '@/data/store'
 import type { Tone } from '@/data/shiftView'
-import { num } from '@/lib/kpi'
+import { fmtDuration, parts } from '@/lib/kpi'
 import type { MachineStateKey } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
@@ -64,8 +65,9 @@ export default function OperatorScreen() {
     if (!m || !live) return null
     return {
       p: shiftProgress(m, w, now),
-      bars: hourlyBars([m.id], w, now),
-      q: lastHourQuality(m.id, now),
+      track: stateTrack(m.id, w.start, now),
+      done: completions([m.id], w.start, now),
+      lastMeas: source.spc(m.id).at(-1) ?? null,
       todos: operatorTodos(live, w, now),
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -82,14 +84,19 @@ export default function OperatorScreen() {
     )
   }
 
-  const { p, bars, q, todos } = data
+  const { p, track, done, lastMeas, todos } = data
   const health = activeRisk(m.id, live.state, live.reasonId)
   const band = BAND[live.stateKey]
   const running = live.state === 0
-  const ahead = p.diff >= 0
+  const cycleSec = m.batchSize / m.idealRate
+  // Uzun çevrimlerde fark parça yerine zamanla anlatılır: "planın ~1 sa gerisindesin"
+  const lagSec = (-p.diff * cycleSec) / m.batchSize
+  const ahead = lagSec <= 10 * 60
   const speedPct = Math.round(live.speedPct * 100)
   const advice = live.slow ? SLOW_ADVICE[live.slowReasonId] ?? SLOW_ADVICE[7] : null
-  const qHigh = q.total > 50 && q.rate > 0.02
+  const nokShift = p.nok > 0
+  const measOk = lastMeas ? lastMeas.mean >= m.spec.lsl && lastMeas.mean <= m.spec.usl : true
+  const dec = m.spec.sigma < 0.01 ? 3 : m.spec.sigma < 1 ? 2 : 1
 
   return (
     <div className="flex h-full flex-col gap-3 overflow-y-auto bg-background p-4">
@@ -142,21 +149,21 @@ export default function OperatorScreen() {
 
       <div className="grid flex-1 grid-cols-2 gap-3">
         {/* Üretim */}
-        <Panel title="Bu vardiya ürettiğin">
+        <Panel title="Bu vardiya tamamlanan">
           <div className="mt-2 flex items-baseline gap-3">
-            <span className="tnum text-6xl font-bold leading-none tracking-tight">{num(p.ok)}</span>
-            <span className="text-2xl text-fg-2">/ {num(p.target)}</span>
+            <span className="tnum text-6xl font-bold leading-none tracking-tight">{p.ok + p.nok}</span>
+            <span className="text-2xl text-fg-2">/ {parts(p.target)} parça</span>
           </div>
           <div className="relative mt-4 h-6 w-full rounded-full bg-wash" role="meter" aria-valuenow={Math.round(p.progress * 100)} aria-valuemin={0} aria-valuemax={100} aria-label="Vardiya hedefi ilerlemesi">
             <div className="h-full rounded-full transition-[width] duration-700" style={{ width: `${p.progress * 100}%`, background: ahead ? 'var(--series-1)' : 'var(--serious)' }} />
             <div className="absolute -top-1.5 h-9 w-1 rounded bg-fg" style={{ left: `calc(${Math.min(1, p.timeProgress) * 100}% - 2px)` }} title="Şu an olması gereken" />
           </div>
           <div className="mt-2 text-base text-fg-2">
-            Şu an olması gereken: <b className="tnum text-fg">{num(p.expected)}</b>
+            Şu an olması gereken: <b className="tnum text-fg">{parts(p.expected)}</b> · yapılan (yarım parça dahil) <b className="tnum text-fg">{parts(p.done)}</b>
           </div>
           <div className={cn('mt-auto flex items-center gap-2 pt-3 text-3xl font-bold', ahead ? 'text-good-text' : 'text-warning-text')}>
             {ahead ? <CheckCircle2 className="size-8" /> : <AlertTriangle className="size-8" />}
-            {ahead ? <>Hedefin {num(p.diff)} adet önündesin</> : <>{num(-p.diff)} adet GERİDESİN</>}
+            {ahead ? (lagSec < -10 * 60 ? <>Planın ~{fmtDuration(-lagSec)} önündesin</> : <>Plana göre ilerliyorsun</>) : <>Planın ~{fmtDuration(lagSec)} GERİSİNDESİN</>}
           </div>
         </Panel>
 
@@ -182,7 +189,12 @@ export default function OperatorScreen() {
                   </>
                 ) : (
                   <span className="text-fg-2">
-                    Dakikada <b className="tnum text-fg">{num(live.ratePerSec * 60)}</b> ürün
+                    {m.batchSize > 1 ? 'Şarj' : 'Parça'} <b className="tnum text-fg">%{Math.round(live.cycle.progress * 100)}</b> tamam
+                    {live.cycle.remainingSec !== null && (
+                      <>
+                        {' · '}tahmini bitiş <b className="tnum text-fg">{new Date(now + live.cycle.remainingSec * 1000).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' })}</b>
+                      </>
+                    )}
                   </span>
                 )}
               </div>
@@ -195,23 +207,32 @@ export default function OperatorScreen() {
         </Panel>
 
         {/* Kalite */}
-        <Panel title="Hatalı ürün · son 1 saat">
-          <div className={cn('mt-1 flex items-center gap-3 text-5xl font-bold', qHigh ? 'text-warning-text' : 'text-good-text')}>
-            {qHigh ? <AlertTriangle className="size-12" /> : <CheckCircle2 className="size-12" />}
-            <span className="tnum text-fg">{num(q.nok)}</span>
-            <span className="text-3xl">adet</span>
+        <Panel title="Kalite · bu vardiya">
+          <div className={cn('mt-1 flex items-center gap-3 text-5xl font-bold', nokShift ? 'text-critical-text' : 'text-good-text')}>
+            {nokShift ? <AlertTriangle className="size-12" /> : <CheckCircle2 className="size-12" />}
+            <span className="tnum text-fg">{p.nok}</span>
+            <span className="text-3xl">uygunsuz parça</span>
           </div>
-          <div className="mt-3 text-xl text-fg-2">
-            {q.total > 0 ? <>Her 100 üründen {(q.rate * 100).toFixed(1).replace('.', ',')} tanesi hatalı · </> : null}
-            <b className={qHigh ? 'text-warning-text' : 'text-good-text'}>{qHigh ? 'YÜKSEK — ölçü kontrolü yap' : 'normal'}</b>
-          </div>
+          {nokShift && <div className="mt-2 text-xl font-semibold text-critical-text">Parçayı karantinaya ayır, kaliteye bildir (MRB)</div>}
+          {lastMeas && (
+            <div className="mt-auto pt-3 text-lg text-fg-2">
+              Son ara ölçüm · {m.spec.characteristic}:{' '}
+              <b className={cn('tnum', measOk ? 'text-fg' : 'text-critical-text')}>
+                {lastMeas.mean.toFixed(dec).replace('.', ',')} {m.spec.unit}
+              </b>{' '}
+              <span className="text-base">
+                (tolerans {m.spec.lsl.toFixed(dec).replace('.', ',')}–{m.spec.usl.toFixed(dec).replace('.', ',')}) {measOk ? '✓' : '✗'}
+              </span>
+            </div>
+          )}
         </Panel>
 
-        {/* Saat saat */}
-        <Panel title="Saat saat üretim">
-          <div className="-mx-2 mt-1 flex-1">
-            <HourBars bars={bars} height={150} big />
+        {/* Vardiya zaman çizgisi */}
+        <Panel title="Vardiya zaman çizgisi">
+          <div className="mt-3 flex-1">
+            <ShiftTimeline rows={[{ id: m.id, label: m.code, track, parts: done }]} from={w.start} to={w.end} now={now} big />
           </div>
+          <ShiftTimelineLegend />
         </Panel>
       </div>
 

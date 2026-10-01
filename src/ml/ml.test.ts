@@ -71,7 +71,7 @@ describe('demo hikâyeleri (yerel hat)', () => {
   const run = runLocalPipeline(t0 - 48 * HOUR, t0, t0)
   const ds = run.source
 
-  it('MNT-01 şu an riskli ve bildirim oluşmuş', () => {
+  it('FRZ-01 şu an riskli ve bildirim oluşmuş', () => {
     const r = ds.riskSeries('M05')
     const last = r[r.length - 1]
     console.log('M05 risk', last.risk.toFixed(2), last.level, last.factors.map((f) => f.text))
@@ -79,11 +79,11 @@ describe('demo hikâyeleri (yerel hat)', () => {
     expect(ds.notifications().some((n) => n.machineId === 'M05')).toBe(true)
   })
 
-  it('PKT-04 arızasından önce uyarı verilmiş ve arıza ile doğrulanmış', () => {
-    const n = ds.notifications().find((x) => x.machineId === 'M12' && x.failureAt !== null)
+  it('FRN-02 arızasından önce uyarı verilmiş ve arıza ile doğrulanmış', () => {
+    const n = ds.notifications().find((x) => x.machineId === 'M10' && x.failureAt !== null)
     expect(n).toBeDefined()
     const lead = (n!.failureAt! - n!.t) / HOUR
-    console.log('M12 uyarı', lead.toFixed(1), 'saat önce')
+    console.log('M10 uyarı', lead.toFixed(1), 'saat önce')
     expect(lead).toBeGreaterThan(1)
   })
 

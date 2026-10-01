@@ -37,7 +37,7 @@ export function runLocalPipeline(startT: number, endT: number, t0: number): Loca
   MACHINES.forEach((m, idx) => {
     const sim = new MachineSim(m, idx, t0)
     const rec = new PlcRecorder(m)
-    const tr = new MachineTransformer({ id: m.id, idealCycleMs: 1000 / m.idealRate, toolLife: toolLifeCycles(m) }, { experienceAt: experienceFromDefs })
+    const tr = new MachineTransformer({ id: m.id, type: m.type, idealCycleMs: 1000 / m.idealRate, toolLife: toolLifeCycles(m) }, { experienceAt: experienceFromDefs })
     const rows = emptyRows()
     const tv = new Uint8Array(n)
     for (let i = 0; i < n; i++) {

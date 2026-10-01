@@ -110,15 +110,29 @@ export function downtimeByReason(s: MachineSeries, i0: number, i1: number): Map<
   return out
 }
 
-/** Yavaşlık nedenine göre kayıp üretim (adet) */
-export function slowLossByReason(s: MachineSeries, m: Machine, i0: number, i1: number): Map<number, number> {
+/** step bucket'lık dilimlerde ortalama ilerleme hızı (ideal = 1; duruşta 0) */
+export function speedSlices(s: MachineSeries, i0: number, i1: number, step: number): [number, number][] {
+  const out: [number, number][] = []
+  const lo = Math.max(0, i0)
+  const hi = Math.min(s.length, i1)
+  for (let a = lo; a < hi; a += step) {
+    const b = Math.min(a + step, hi)
+    let c = 0
+    for (let i = a; i < b; i++) c += s.state[i] === STATE.RUNNING ? s.speed[i] : 0
+    out.push([s.startT + ((a + b) / 2) * BUCKET_MS, c / (b - a)])
+  }
+  return out
+}
+
+/** Yavaşlık nedenine göre kayıp süre (sn): ideal hızın altında çalışılan sürenin karşılığı */
+export function slowLossByReason(s: MachineSeries, _m: Machine, i0: number, i1: number): Map<number, number> {
   const out = new Map<number, number>()
   for (let i = Math.max(0, i0); i < Math.min(s.length, i1); i++) {
     if (s.state[i] !== STATE.RUNNING) continue
     const r = s.slowReason[i]
     if (!r) continue
-    // Kayıp: ideal hıza göre eksik üretim (yalnızca yavaşlık kaynaklı, %96 taban hızına kıyasla)
-    const lost = Math.max(0, 0.96 - s.speed[i]) * m.idealRate * BUCKET_SEC
+    // Kayıp: %96 taban hızına göre eksik çalışılan süre (uzun çevrimlerde adet yerine süre anlamlı)
+    const lost = Math.max(0, 0.96 - s.speed[i]) * BUCKET_SEC
     out.set(r, (out.get(r) ?? 0) + lost)
   }
   return out

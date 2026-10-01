@@ -40,20 +40,42 @@ export interface Line {
   short: string
 }
 
+/** cnc: torna/freze · grinder: taşlama · furnace: vakum fırını · coating: plazma sprey · cmm: ölçüm */
+export type MachineType = 'cnc' | 'grinder' | 'furnace' | 'coating' | 'cmm'
+
+export const MACHINE_TYPE_LABEL: Record<MachineType, string> = {
+  cnc: 'CNC tezgâh',
+  grinder: 'Taşlama',
+  furnace: 'Vakum fırını',
+  coating: 'Kaplama',
+  cmm: 'Ölçüm',
+}
+
 export interface Machine {
   id: string
   code: string
   name: string
   model: string
   lineId: string
+  type: MachineType
+  /** Parça adı, ör. "HPT türbin diski" */
   product: string
+  /** Parça numarası (P/N) */
+  partNumber: string
+  /** Rota üzerindeki operasyon, ör. "Op 10" */
+  operation: string
+  /** Bir çevrimde çıkan parça sayısı (fırın şarjı > 1) */
+  batchSize: number
   orderNo: string
-  /** İdeal hız (ürün/sn) */
+  /** İdeal üretim hızı (parça/sn) = şarj / ideal çevrim süresi */
   idealRate: number
-  /** Üretim günü (06:00→06:00) hedefi, adet */
+  /** Üretim günü (06:00→06:00) hedefi, parça */
   dailyTarget: number
   spec: SpecLimits
 }
+
+/** İdeal çevrim süresi (saat) */
+export const idealCycleHours = (m: Machine) => m.batchSize / m.idealRate / 3600
 
 export type PersonRole = 'operator' | 'foreman'
 export interface Person {

@@ -117,7 +117,7 @@ export default function Events() {
     () => [
       { field: 'start', headerName: 'Başlangıç', width: 170, sort: 'desc', valueFormatter: (p) => fmtTime(p.value), filter: 'agNumberColumnFilter' },
       { field: 'machine', headerName: 'Makine', width: 110 },
-      { field: 'line', headerName: 'Hat', width: 90 },
+      { field: 'line', headerName: 'Hücre', width: 100 },
       { field: 'type', headerName: 'Tür', width: 130, cellRenderer: TypeCell },
       { field: 'reason', headerName: 'Neden', flex: 1, minWidth: 260 },
       { field: 'durationSec', headerName: 'Süre', width: 120, valueFormatter: (p) => fmtDuration(p.value), filter: 'agNumberColumnFilter' },

@@ -70,7 +70,7 @@ export class DemoDataSource implements LiveSource {
       this.units.set(m.id, {
         sim: new MachineSim(m, idx, this.t0),
         rec: new PlcRecorder(m),
-        tr: new MachineTransformer({ id: m.id, idealCycleMs: 1000 / m.idealRate, toolLife: toolLifeCycles(m) }, { experienceAt: experienceFromDefs }),
+        tr: new MachineTransformer({ id: m.id, type: m.type, idealCycleMs: 1000 / m.idealRate, toolLife: toolLifeCycles(m) }, { experienceAt: experienceFromDefs }),
       })
       this.series.set(m.id, createSeries(this.startT, (HISTORY + DAY) / BUCKET_MS))
     })
@@ -229,7 +229,12 @@ export class DemoDataSource implements LiveSource {
         MachineName: m.name,
         Model: m.model,
         LineId: m.lineId,
-        IdealCycleTimeMs: Math.round(1000 / m.idealRate),
+        MachineType: m.type,
+        PartNumber: m.partNumber,
+        PartName: m.product,
+        OperationNo: m.operation,
+        BatchSize: m.batchSize,
+        IdealCycleTimeMs: Math.round((m.batchSize * 1000) / m.idealRate),
         DailyTarget: m.dailyTarget,
         ToolLifeCycles: toolLifeCycles(m),
         QualityCharacteristic: m.spec.characteristic,

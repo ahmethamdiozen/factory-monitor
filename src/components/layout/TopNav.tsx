@@ -6,7 +6,7 @@ const KIOSK_PREFIXES = ['/makine-ekrani', '/foreman', '/sql']
 
 export const VIEWS = [
   { to: '/makine-ekrani', label: 'Makine', icon: Wrench, hint: 'Makine başındaki operatör ekranı' },
-  { to: '/foreman', label: 'Foreman', icon: HardHat, hint: 'Hat ve vardiya sorumlusu ekranı' },
+  { to: '/foreman', label: 'Foreman', icon: HardHat, hint: 'Hücre ve vardiya sorumlusu ekranı' },
   { to: '/', label: 'Mühendis', icon: Factory, hint: 'Analiz ve raporlar' },
   { to: '/sql', label: 'SQL Veri', icon: Database, hint: 'SQL Server tabloları ve veri hattı' },
 ]

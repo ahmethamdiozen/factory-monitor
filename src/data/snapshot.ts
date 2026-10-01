@@ -3,8 +3,8 @@ import { source, useFactory } from '@/data/store'
 import { DOWNTIME_REASONS, LINES, MACHINES, PEOPLE, REASON_BY_ID, SLOW_REASONS, foremanFor, operatorFor, shiftOf } from '@/data/registry'
 import { detectViolations, referenceLimits } from '@/lib/spc'
 import { activeRisk } from '@/data/predictiveView'
-import type { Kpi, ProjectionInfo } from '@/lib/kpi'
-import { dayStartOf, idxOf, machineKpi, projection, shiftStartOf, sumKpi } from '@/lib/kpi'
+import type { CycleInfo, Kpi, ProjectionInfo } from '@/lib/kpi'
+import { cycleInfo, dayStartOf, idxOf, machineKpi, parts, projection, shiftStartOf, sumKpi } from '@/lib/kpi'
 import { BUCKET_MS, BUCKET_SEC, STATE, STATE_KEYS } from '@/lib/types'
 import type { Machine, MachineStateKey, Person, ShiftId, StateCode } from '@/lib/types'
 
@@ -25,8 +25,10 @@ export interface MachineLive {
   kpiDay: Kpi
   operator?: Person
   foreman?: Person
-  /** Son 60 dk, 1 dk'lık dilimler: ürün/sn (sparkline) */
+  /** Son 2 saat, 5 dk'lık dilimler: ilerleme hızı (ideal = 1; duruşta 0) */
   spark: number[]
+  /** Şu anki parçanın / şarjın ilerlemesi */
+  cycle: CycleInfo
 }
 
 export type Severity = 'critical' | 'serious' | 'warning' | 'info'
@@ -94,10 +96,14 @@ function machineLive(m: Machine, now: number): MachineLive {
   }
 
   const spark: number[] = []
-  for (let a = Math.max(0, s.length - 360); a < s.length; a += 6) {
+  for (let a = Math.max(0, s.length - 720); a < s.length; a += 30) {
     let c = 0
-    for (let k = a; k < Math.min(a + 6, s.length); k++) c += s.ok[k] + s.nok[k]
-    spark.push(c / (6 * BUCKET_SEC))
+    let n = 0
+    for (let k = a; k < Math.min(a + 30, s.length); k++) {
+      c += s.state[k] === STATE.RUNNING ? s.speed[k] : 0
+      n++
+    }
+    spark.push(n ? c / n : 0)
   }
 
   const sh = shiftOf(now)
@@ -111,13 +117,14 @@ function machineLive(m: Machine, now: number): MachineLive {
     ratePerSec,
     speedPct,
     slow,
-    slowReasonId: slow ? slowReasonId : 0,
+    slowReasonId: slow ? slowReasonId || 7 : 0,
     proj: projection(s, m, now),
     kpiShift: machineKpi(s, m, Math.max(0, idxOf(source, shiftStartOf(now))), i1),
     kpiDay: machineKpi(s, m, Math.max(0, idxOf(source, dayStartOf(now))), i1),
     operator: operatorFor(m.id, sh),
     foreman: foremanFor(m.lineId, sh),
     spark,
+    cycle: cycleInfo(s, m),
   }
 }
 
@@ -171,7 +178,7 @@ function buildAlerts(list: MachineLive[], now: number): Alert[] {
         severity: 'warning',
         machineId: m.id,
         title: `${m.code} · Hedefin gerisinde`,
-        detail: `Gün sonu tahmini ${Math.round((l.proj.projected / m.dailyTarget) * 100)}% — ${Math.round(l.proj.shortfall).toLocaleString('tr-TR')} adet eksik`,
+        detail: `Gün sonu tahmini %${Math.round((l.proj.projected / m.dailyTarget) * 100)} — ${parts(l.proj.shortfall)} parça eksik`,
         open: true,
       })
     }

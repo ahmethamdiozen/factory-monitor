@@ -89,7 +89,7 @@ describe('uçtan uca: kurallar simülatörün gerçek nedenini buluyor', () => {
   it.each([
     ['M02', RULE.WEAR],
     ['M04', RULE.TEMP],
-    ['M09', RULE.FEED],
+    ['M07', RULE.FEED],
     ['M11', RULE.FEED],
     ['M08', RULE.OPERATOR],
   ])('%s → neden %i', (id, code) => {

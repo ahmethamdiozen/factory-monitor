@@ -93,9 +93,13 @@ async function loadRef(p: ConnectionPool): Promise<Ref> {
         name: m.MachineName,
         model: m.Model,
         lineId: m.LineId,
-        product: m.ProductName ?? '—',
+        type: m.MachineType,
+        product: m.PartName,
+        partNumber: m.PartNumber,
+        operation: m.OperationNo,
+        batchSize: m.BatchSize,
         orderNo: m.WorkOrderNo ?? '—',
-        idealRate: 1000 / m.IdealCycleTimeMs,
+        idealRate: (m.BatchSize * 1000) / m.IdealCycleTimeMs,
         dailyTarget: m.DailyTarget,
         spec: { characteristic: m.QualityCharacteristic, unit: m.QualityUnit, nominal: Number(m.Nominal), lsl: Number(m.Lsl), usl: Number(m.Usl), sigma: Number(m.ProcessStdDev) },
       }),
@@ -123,7 +127,7 @@ function transformerFor(machineId: string): MachineTransformer {
   if (!tr) {
     const m = ref!.meta.machines.find((x) => x.id === machineId)
     if (!m) throw new Error(`Bilinmeyen makine: ${machineId}`)
-    tr = new MachineTransformer({ id: m.id, idealCycleMs: 1000 / m.idealRate, toolLife: ref!.toolLife.get(m.id) ?? 1e9 }, { experienceAt })
+    tr = new MachineTransformer({ id: m.id, type: m.type, idealCycleMs: 1000 / m.idealRate, toolLife: ref!.toolLife.get(m.id) ?? 1e9 }, { experienceAt })
     const snap = kvGet<string>(db, `tr:${machineId}`)
     if (snap) tr.restore(snap)
     transformers.set(machineId, tr)
@@ -314,11 +318,22 @@ async function poll(): Promise<void> {
     }
     if (!kvGet(db, 'datasetId')) kvSet(db, 'datasetId', Date.now().toString(36))
 
+    // SQL Server şeması değişti mi? (simülatör tabloları yeniden kurduysa Id'ler baştan başlar)
+    const ver = (await pool.request().query("SELECT CASE WHEN OBJECT_ID('dbo.SchemaInfo') IS NULL THEN 0 ELSE 1 END AS e")).recordset[0].e
+      ? ((await pool.request().query('SELECT MAX(Version) AS v FROM dbo.SchemaInfo')).recordset[0].v as number | null)
+      : null
+    const known = kvGet<number | null>(db, 'sourceSchema')
+    if (known !== ver && lastIds().ProductionCounters > 0) {
+      rebuild(`SQL Server şema sürümü değişti (${known ?? '-'} → ${ver ?? '-'})`)
+      kvSet(db, 'meta', ref.meta)
+    }
+    kvSet(db, 'sourceSchema', ver)
     // SQL Server sıfırlandı mı? (Id'ler geri gittiyse)
     const max = (await pool.request().query('SELECT ISNULL((SELECT MAX(Id) FROM dbo.ProductionCounters), 0) AS c')).recordset[0].c as number
     if (Number(max) < lastIds().ProductionCounters) {
       rebuild('SQL Server verisi sıfırlanmış')
       kvSet(db, 'meta', ref.meta)
+      kvSet(db, 'sourceSchema', ver)
     }
     if (!engine) initPredictive()
 

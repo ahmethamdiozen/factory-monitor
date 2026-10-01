@@ -45,7 +45,7 @@ const t1 = Date.now()
 MACHINES.forEach((m, idx) => {
   const sim = new MachineSim(m, idx, t0)
   const rec = new PlcRecorder(m)
-  const tr = new MachineTransformer({ id: m.id, idealCycleMs: 1000 / m.idealRate, toolLife: toolLifeCycles(m) }, { experienceAt: experienceFromDefs })
+  const tr = new MachineTransformer({ id: m.id, type: m.type, idealCycleMs: 1000 / m.idealRate, toolLife: toolLifeCycles(m) }, { experienceAt: experienceFromDefs })
   const ft = new FeatureTracker(m.id, m.lineId)
   const samples: Sample[] = []
   /** arıza başlangıçları ve o andaki gizli yıpranma (öngörülebilir mi?) */

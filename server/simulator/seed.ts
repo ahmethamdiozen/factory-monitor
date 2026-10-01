@@ -30,11 +30,12 @@ export async function seedReference(pool: ConnectionPool, now: number): Promise<
     for (const m of MACHINES) {
       await q()
         .input('id', m.id).input('code', m.code).input('name', m.name).input('model', m.model).input('line', m.lineId)
-        .input('cycle', Math.round(1000 / m.idealRate)).input('target', m.dailyTarget).input('tool', toolLifeCycles(m))
+        .input('type', m.type).input('pn', m.partNumber).input('pname', m.product).input('op', m.operation).input('batch', m.batchSize)
+        .input('cycle', Math.round((m.batchSize * 1000) / m.idealRate)).input('target', m.dailyTarget).input('tool', toolLifeCycles(m))
         .input('ch', m.spec.characteristic).input('unit', m.spec.unit)
         .input('nom', sql.Decimal(12, 4), m.spec.nominal).input('lsl', sql.Decimal(12, 4), m.spec.lsl)
         .input('usl', sql.Decimal(12, 4), m.spec.usl).input('sd', sql.Decimal(12, 4), m.spec.sigma)
-        .query('INSERT dbo.Machines VALUES (@id,@code,@name,@model,@line,@cycle,@target,@tool,@ch,@unit,@nom,@lsl,@usl,@sd)')
+        .query('INSERT dbo.Machines VALUES (@id,@code,@name,@model,@line,@type,@pn,@pname,@op,@batch,@cycle,@target,@tool,@ch,@unit,@nom,@lsl,@usl,@sd)')
       await q().input('wo', m.orderNo).input('m', m.id).input('p', m.product).input('t', m.dailyTarget * 5)
         .query("INSERT dbo.WorkOrders VALUES (@wo, @m, @p, @t, 'Released')")
     }
@@ -78,6 +79,30 @@ export async function ensureAssignments(pool: ConnectionPool, from: number, to: 
   }
   if (table.rows.length) await pool.request().bulk(table)
   return table.rows.length
+}
+
+/** Şema sürümü: tablo yapısı değişince artırılır → simülatör tabloları düşürüp yeniden kurar */
+export const SCHEMA_VERSION = 2
+
+const ALL_TABLES = [
+  'ShiftAssignments', 'WorkOrders', 'MachineEvents', 'ProductionCounters', 'ProcessValues', 'ProcessTags', 'MachineTags',
+  'QualitySamples', 'PartOperations', 'Employees', 'Machines', 'Lines', 'DowntimeReasons', 'ShiftDefinitions', 'SchemaInfo',
+]
+
+export async function schemaVersion(pool: ConnectionPool): Promise<number | null> {
+  // Tablo yokken alt sorgu derlenemediği için önce varlığı ayrı sorulur
+  const e = await pool.request().query<{ id: number | null }>("SELECT OBJECT_ID('dbo.SchemaInfo') AS id")
+  if (e.recordset[0].id === null) return null
+  const r = await pool.request().query<{ v: number | null }>('SELECT MAX(Version) AS v FROM dbo.SchemaInfo')
+  return r.recordset[0].v
+}
+
+export async function dropAll(pool: ConnectionPool): Promise<void> {
+  for (const t of ALL_TABLES) await pool.request().batch(`DROP TABLE IF EXISTS dbo.${t}`)
+}
+
+export async function setSchemaVersion(pool: ConnectionPool): Promise<void> {
+  await pool.request().batch(`DELETE dbo.SchemaInfo; INSERT dbo.SchemaInfo VALUES (${SCHEMA_VERSION})`)
 }
 
 export async function wipe(pool: ConnectionPool): Promise<void> {

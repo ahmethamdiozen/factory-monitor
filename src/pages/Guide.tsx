@@ -21,9 +21,9 @@ const GROUPS: { title: string; items: Item[] }[] = [
   {
     title: 'Hız',
     items: [
-      { name: 'Ürün/sn ve hız %', desc: 'Anlık üretim hızı, ideal çevrim süresine kıyasla. %90 altı yavaşlık kabul edilir.', status: 'live', where: 'Makine kartı' },
-      { name: 'Çevrim / takt süresi', desc: 'Bir ürünün ideal üretim süresi ve müşteri talebine göre hedeflenen ritim.', status: 'data' },
-      { name: 'Yavaşlık nedeni', desc: 'Takım aşınması, hammadde, sıcaklık, operatör uyumu, ısınma… kayıp adetleriyle sıralanır.', status: 'live', where: 'Kart, Makine, Kayıp' },
+      { name: 'İlerleme hızı ve parça ilerlemesi', desc: 'İdeal çevrime göre ilerleme hızı ve şu anki parçanın / şarjın yüzde kaçının bittiği. %90 altı yavaşlık kabul edilir.', status: 'live', where: 'Makine kartı' },
+      { name: 'Çevrim / takt süresi', desc: 'Bir parçanın (fırında bir şarjın) ideal işleme süresi ve teslimat planına göre hedeflenen ritim.', status: 'live', where: 'Makine detayı' },
+      { name: 'Yavaşlık nedeni', desc: 'Takım aşınması, malzeme partisi, soğutma, ilerleme düşürme (titreşim), operatör uyumu, ısınma programı… kayıp süreyle sıralanır.', status: 'live', where: 'Kart, Makine, Kayıp' },
     ],
   },
   {
@@ -32,7 +32,7 @@ const GROUPS: { title: string; items: Item[] }[] = [
       { name: 'MTBF / MTTR', desc: 'Arızalar arası ortalama süre / ortalama onarım süresi. Güvenilirliğin ve bakım hızının ölçüsü.', status: 'live', where: 'Kayıp, Makine' },
       { name: 'Duruş Pareto’su', desc: 'Kayıp süresinin çoğunu hangi 2–3 nedenin oluşturduğunu gösterir (%80/20).', status: 'live', where: 'Kayıp' },
       { name: 'Mikro duruşlar', desc: '2 dakikadan kısa, kayda geçmeyen ama toplamda büyük kayıp yaratan duruşlar.', status: 'live', where: 'Olay Günlüğü' },
-      { name: 'Ayar / kalıp değişim süresi (SMED)', desc: 'Ürün değişiminde kaybedilen süre; kısaltmak küçük partili üretimi mümkün kılar.', status: 'live', where: 'Kayıp' },
+      { name: 'Program / fikstür değişim süresi (SMED)', desc: 'Parça değişiminde ve ilk parça onayında kaybedilen süre; az adetli havacılık üretiminde kritiktir.', status: 'live', where: 'Kayıp' },
       { name: 'Planlı bakım uyumu (PM)', desc: 'Planlı bakımların zamanında yapılma oranı; arızaları öncesinde azaltır.', status: 'data' },
       { name: 'Öngörücü bakım (yapay zekâ)', desc: 'Motor akımı, titreşim, mikro duruş ve çevrim düzensizliği eğilimlerinden 24 saat içinde arıza riskini tahmin eder; risk yükselince bakım ekibine ve foreman\'e bildirim gider.', status: 'live', where: 'Öngörücü Bakım, Foreman, Makine' },
     ],
@@ -43,14 +43,14 @@ const GROUPS: { title: string; items: Item[] }[] = [
       { name: 'FPY / NOK oranı', desc: 'İlk seferde doğru üretim oranı ve hurda yüzdesi.', status: 'live', where: 'Kalite, Genel' },
       { name: 'SPC kontrol grafikleri', desc: 'x̄–R grafiği, Western Electric kuralları; ölçüm sınır dışına çıkmadan önce sürüklenmeyi yakalar.', status: 'live', where: 'Kalite' },
       { name: 'Cp / Cpk', desc: 'Sürecin tolerans içinde kalma yeteneği. Cpk ≥ 1,33 genel kabul.', status: 'live', where: 'Kalite' },
-      { name: 'Hata tipi Pareto', desc: 'Hurdanın hangi hata türlerinden geldiği.', status: 'live', where: 'Kalite' },
+      { name: 'Uygunsuzluk türü Pareto', desc: 'Uygunsuz parçaların hangi nedenlerden geldiği (ölçü dışı, yüzey, sertlik, kaplama…).', status: 'live', where: 'Kalite' },
     ],
   },
   {
     title: 'Plan & Teslimat',
     items: [
       { name: 'Günlük hedef %', desc: 'Üretim günü hedefine ilerleme ve zamansal beklentiyle karşılaştırma.', status: 'live', where: 'Kart, Genel' },
-      { name: 'Tahmini bitiş / yetişme', desc: 'Son 60 dk hızıyla hedefin ne zaman tamamlanacağı ve eksik kalacak adet.', status: 'live', where: 'Kart, Makine' },
+      { name: 'Tahmini bitiş / yetişme', desc: 'Son 4 saatin çalışma etkinliği ve yarım kalan parçayla günlük hedefin ne zaman tamamlanacağı.', status: 'live', where: 'Kart, Makine' },
       { name: 'Plan uyumu, OTIF', desc: 'Siparişlerin zamanında ve eksiksiz teslim oranı.', status: 'data' },
     ],
   },
@@ -65,15 +65,24 @@ const GROUPS: { title: string; items: Item[] }[] = [
   {
     title: 'Kaynak',
     items: [
-      { name: 'Enerji / ürün', desc: 'Birim ürün başına enerji tüketimi; verimsiz çalışmayı ve kaçakları gösterir.', status: 'data' },
+      { name: 'Enerji / parça', desc: 'Parça başına enerji tüketimi; özellikle vakum fırınlarında önemli.', status: 'data' },
       { name: 'Hammadde verimi & WIP', desc: 'Fire oranı, yarı mamul stoku, malzeme bekleme süresi.', status: 'data' },
+    ],
+  },
+  {
+    title: 'Havacılık uyumu',
+    items: [
+      { name: 'Seri numaralı izlenebilirlik (AS9100)', desc: 'Her parçanın hangi makinede, hangi operatörle, hangi malzeme partisinden ve hangi fırın şarjıyla üretildiği.', status: 'data' },
+      { name: 'Fırın pirometrisi (AMS 2750)', desc: 'Isıl işlem reçetesine uyum: set değerinden sapma, tutma süresi, fırın sınıfı toleransı.', status: 'data' },
+      { name: 'İlk parça muayenesi (AS9102)', desc: 'Yeni parça / program değişiminden sonra ilk parçanın tam ölçümü ve onayı.', status: 'data' },
+      { name: 'Özel prosesler (NADCAP)', desc: 'Isıl işlem, kaplama ve tahribatsız muayene gibi özel proseslerin kayıt ve uygunluk takibi.', status: 'data' },
     ],
   },
 ]
 
 const LOSSES = [
   ['Arıza', 'Kullanılabilirlik', 'Makine bozulup duruyor'],
-  ['Ayar & değişim', 'Kullanılabilirlik', 'Ürün/kalıp değişimi, ısınma'],
+  ['Ayar & değişim', 'Kullanılabilirlik', 'Program/fikstür değişimi, ilk parça onayı'],
   ['Mikro duruş', 'Performans', 'Kısa tıkanma, sensör bekleme'],
   ['Hız kaybı', 'Performans', 'İdeal hızın altında çalışma'],
   ['Üretim hurdası', 'Kalite', 'Kararlı üretimde NOK çıkması'],
@@ -83,9 +92,9 @@ const LOSSES = [
 const NEEDS = [
   'Makine kimliği ve durum kaydı: çalışıyor / durdu / bakımda / ayarda + başlangıç-bitiş zamanı',
   'Duruş neden kodu (tabloyla birlikte: kod → açıklama, planlı/plansız)',
-  'Üretim sayaçları: zaman damgalı OK ve NOK adetleri (mümkünse en fazla 10–60 sn aralıkla)',
-  'İdeal çevrim süresi veya ideal hız (makine / ürün bazında)',
-  'İş emri: ürün, hedef adet, başlangıç-bitiş',
+  'Tezgâh parça sayaçları veya MES operasyon kayıtları: zaman damgalı uygun / uygunsuz parça',
+  'İdeal çevrim süresi (parça numarası / operasyon bazında) ve fırın şarj büyüklüğü',
+  'İş emri: parça numarası, operasyon, hedef adet, seri numaraları',
   'Vardiya çizelgesi ve operatör / foreman atamaları',
   'Kalite ölçümleri (varsa): ölçülen özellik, nominal, tolerans, örnek değerleri',
 ]
@@ -99,7 +108,7 @@ export default function Guide() {
           {[
             ['Kullanılabilirlik', 'Çalışma süresi / planlı süre', '%90', 'var(--series-1)'],
             ['Performans', 'Gerçek hız / ideal hız', '%95', 'var(--series-2)'],
-            ['Kalite', 'İyi ürün / toplam ürün', '%99,9', 'var(--series-3)'],
+            ['Kalite', 'Uygun parça / toplam parça', '%99,9', 'var(--series-3)'],
           ].map(([n, d, v, c], i) => (
             <div key={n} className="flex items-center gap-3">
               {i > 0 && <span className="text-xl text-fg-3">×</span>}

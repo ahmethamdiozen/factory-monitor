@@ -59,9 +59,9 @@ export function inferSlowReason(x: RuleInput): number {
 export const RULE_EVIDENCE: Record<number, string> = {
   [RULE.WARMUP]: 'Duruştan döndükten sonraki ilk 6 dakika',
   [RULE.TEMP]: `Sıcaklık ${THRESHOLDS.tempC} °C üstünde`,
-  [RULE.FEED]: `Besleme %${THRESHOLDS.feedPct} altında`,
+  [RULE.FEED]: `İlerleme / besleme %${THRESHOLDS.feedPct} altında`,
   [RULE.WEAR]: 'Titreşim yüksek ve takım ömrünün sonuna yaklaşıldı',
   [RULE.OPERATOR]: 'Operatör tecrübesi 1 yıldan az',
-  [RULE.MATERIAL]: 'Son 1 saatte hammadde lotu değişti',
+  [RULE.MATERIAL]: 'Son 1 saatte malzeme partisi (ısıl no) değişti',
   [RULE.UNKNOWN]: 'Hiçbir sinyal açıklamıyor',
 }

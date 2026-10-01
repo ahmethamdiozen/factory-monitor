@@ -1,4 +1,4 @@
-import { inferSlowReason, RULE } from '@/lib/rules'
+import { inferSlowReason, RULE, UNEXPLAINED_THRESHOLD } from '@/lib/rules'
 import { BUCKET_MS, STATE } from '@/lib/types'
 import { stateFromSqlStatus } from './rows'
 import type { CounterRow, EventRow, ProcessRow, QualityRow } from './rows'
@@ -12,6 +12,8 @@ import type { CounterRow, EventRow, ProcessRow, QualityRow } from './rows'
 
 export interface MachineInfo {
   id: string
+  /** Makine tipi: fırın ve ölçüm makinesinde yavaşlık kuralları (takım, ilerleme…) anlamsızdır */
+  type?: string
   idealCycleMs: number
   toolLife: number
 }
@@ -173,7 +175,11 @@ export class MachineTransformer {
     }
 
     let slowReason = 0
-    if (running && s.speeds.length >= 3 && pv) {
+    const rulesApply = this.info.type !== 'furnace' && this.info.type !== 'cmm'
+    if (running && s.speeds.length >= 3 && pv && !rulesApply) {
+      const speedAvg = s.speeds.reduce((a, b) => a + b, 0) / s.speeds.length
+      slowReason = speedAvg < UNEXPLAINED_THRESHOLD ? RULE.UNKNOWN : RULE.NONE
+    } else if (running && s.speeds.length >= 3 && pv) {
       const speedAvg = s.speeds.reduce((a, b) => a + b, 0) / s.speeds.length
       slowReason = inferSlowReason({
         speedAvg,

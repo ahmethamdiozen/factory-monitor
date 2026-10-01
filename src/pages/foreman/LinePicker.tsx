@@ -14,8 +14,8 @@ export default function LinePicker() {
     <div className="h-full overflow-y-auto p-6">
       <div className="mx-auto max-w-[1200px]">
         <h1 className="text-xl font-semibold">Foreman ekranı</h1>
-        <p className="mt-1 text-sm text-fg-2">Hat seçin. Ekran o hattın şu anki vardiyasını ve başındaki foreman'i otomatik gösterir ({w.name}).</p>
-        <div className="mt-6 grid grid-cols-3 gap-4">
+        <p className="mt-1 text-sm text-fg-2">Hücre seçin. Ekran o hücrenin şu anki vardiyasını ve başındaki foreman'i otomatik gösterir ({w.name}).</p>
+        <div className="mt-6 grid grid-cols-2 gap-4">
           {LINES.map((l) => {
             const f = foremanFor(l.id, w.id)
             const ms = snap.machines.filter((m) => m.machine.lineId === l.id)

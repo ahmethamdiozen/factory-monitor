@@ -1,5 +1,12 @@
 -- "Fabrikanın" SQL Server şeması. Simülatör yazar, collector sadece okur.
 -- Tüm zamanlar UTC. Ölçüm/olay tabloları sadece ekleme (insert-only) + identity anahtar.
+-- Şema sürümü dbo.SchemaInfo'dadır; simülatör sürüm değişince tabloları yeniden kurar.
+
+IF OBJECT_ID('dbo.SchemaInfo') IS NULL
+CREATE TABLE dbo.SchemaInfo (
+  Version int NOT NULL
+);
+GO
 
 IF OBJECT_ID('dbo.Lines') IS NULL
 CREATE TABLE dbo.Lines (
@@ -14,7 +21,12 @@ CREATE TABLE dbo.Machines (
   MachineName            nvarchar(100) NOT NULL,
   Model                  varchar(30)   NOT NULL,
   LineId                 varchar(10)   NOT NULL REFERENCES dbo.Lines(LineId),
-  IdealCycleTimeMs       int           NOT NULL,
+  MachineType            varchar(20)   NOT NULL, -- cnc, grinder, furnace, coating, cmm
+  PartNumber             nvarchar(30)  NOT NULL,
+  PartName               nvarchar(100) NOT NULL,
+  OperationNo            varchar(10)   NOT NULL,
+  BatchSize              int           NOT NULL, -- bir çevrimdeki parça (fırın şarjı)
+  IdealCycleTimeMs       int           NOT NULL, -- bir çevrimin (şarjın) ideal süresi
   DailyTarget            int           NOT NULL,
   ToolLifeCycles         int           NOT NULL,
   QualityCharacteristic  nvarchar(60)  NOT NULL,

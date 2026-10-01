@@ -13,7 +13,7 @@ import type { RecordedRows } from '@/sim/plcRecorder'
 import { BUCKET_MS } from '@/lib/types'
 import { log } from '../shared/env'
 import { connect, ensureDatabase, retry, runSqlFile } from '../shared/mssql'
-import { ensureAssignments, seedReference, wipe } from './seed'
+import { SCHEMA_VERSION, dropAll, ensureAssignments, schemaVersion, seedReference, setSchemaVersion, wipe } from './seed'
 import { writeRows } from './writer'
 
 const STATE_FILE = 'data/sim-state.json'
@@ -53,7 +53,14 @@ process.on('exit', () => {
 
 await retry(ensureDatabase, 'SQL Server', say)
 const pool = await connect()
+const ver = await schemaVersion(pool)
+if (ver !== SCHEMA_VERSION) {
+  say(`şema sürümü ${ver ?? 'yok'} → ${SCHEMA_VERSION}: tablolar yeniden kuruluyor`)
+  await dropAll(pool)
+  rmSync(STATE_FILE, { force: true })
+}
 await runSqlFile(pool, 'server/sql/schema.sql')
+await setSchemaVersion(pool)
 
 if (reset) {
   say('--reset: tüm tablolar temizleniyor')

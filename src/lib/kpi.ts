@@ -72,22 +72,25 @@ function ratios(a: Acc, idealSecSum: number, valueSecSum: number): Kpi {
       microstop: a.stopByCat.microstop ?? 0,
       waiting: (a.stopByCat.material ?? 0) + (a.stopByCat.staffing ?? 0) + (a.stopByCat.quality ?? 0),
       speed: Math.max(0, a.runSec - idealSecSum),
-      quality: a.total > 0 ? a.nok / a.idealRate : 0,
+      quality: Math.max(0, idealSecSum - valueSecSum),
     },
   }
 }
 
 export function machineKpi(s: MachineSeries, m: Machine, i0: number, i1: number): Kpi {
+  void m
   const a: Acc = { runSec: 0, plannedStopSec: 0, totalSec: 0, total: 0, ok: 0, nok: 0, idealRate: m.idealRate, stopByCat: {} }
   const lo = Math.max(0, i0)
   const hi = Math.min(s.length, i1)
+  // Performans, tamamlanan parça sayısından değil ideal çevrime göre ilerleme hızından hesaplanır:
+  // saatler süren parçalarda adet bazlı hesap vardiya içinde %0 ile %200 arasında salınır.
+  let work = 0
   for (let i = lo; i < hi; i++) {
     a.totalSec += BUCKET_SEC
     const st = s.state[i]
     if (st === STATE.RUNNING) {
       a.runSec += BUCKET_SEC
-      a.ok += s.ok[i]
-      a.nok += s.nok[i]
+      work += Math.min(1.2, s.speed[i]) * BUCKET_SEC
     } else {
       const r = REASON_BY_ID[s.downReason[i]]
       if (r?.planned) a.plannedStopSec += BUCKET_SEC
@@ -97,10 +100,14 @@ export function machineKpi(s: MachineSeries, m: Machine, i0: number, i1: number)
       }
     }
   }
+  // Parçalar (kalite) çalışma durumundan bağımsız sayılır: fırın şarjı yükleme anında biter
+  for (let i = lo; i < hi; i++) {
+    a.ok += s.ok[i]
+    a.nok += s.nok[i]
+  }
   a.total = a.ok + a.nok
-  const idealSec = a.total / m.idealRate
-  const valueSec = a.ok / m.idealRate
-  return ratios(a, idealSec, valueSec)
+  const q = a.total > 0 ? a.ok / a.total : 1
+  return ratios(a, work, work * q)
 }
 
 /** Birden çok makinenin KPI'larını (zaman ağırlıklı) birleştirir. */
@@ -183,23 +190,71 @@ export interface ProjectionInfo {
   shortfall: number
 }
 
+export interface CycleInfo {
+  /** İçinde bulunulan parçanın (fırında şarjın) ilerlemesi 0–1 */
+  progress: number
+  /** Kalan süre tahmini (sn); makine uzun süredir duruyorsa null */
+  remainingSec: number | null
+  /** Son parça/şarj tamamlanma zamanı */
+  lastDoneAt: number | null
+}
+
+/**
+ * Şu anki parçanın ilerlemesi: son tamamlanmadan bu yana yapılan iş (çalışma süresi × hız)
+ * ideal çevrim süresine bölünür. Uzun çevrimli (saatler süren) parçalar için anlamlı gösterge.
+ */
+export function cycleInfo(s: MachineSeries, m: Machine): CycleInfo {
+  const cycleSec = m.batchSize / m.idealRate
+  const limit = Math.max(0, s.length - Math.ceil((cycleSec * 3) / BUCKET_SEC))
+  let work = 0
+  let lastDoneAt: number | null = null
+  let recentSpeed = 0
+  let recentN = 0
+  for (let i = s.length - 1; i >= limit; i--) {
+    if (s.ok[i] + s.nok[i] > 0) {
+      lastDoneAt = s.startT + (i + 1) * BUCKET_MS
+      break
+    }
+    if (s.state[i] === STATE.RUNNING) {
+      work += s.speed[i] * BUCKET_SEC
+      if (recentN < 180) {
+        recentSpeed += s.speed[i]
+        recentN++
+      }
+    }
+  }
+  const progress = Math.min(0.99, work / cycleSec)
+  const speed = recentN >= 6 ? recentSpeed / recentN : null
+  return { progress, remainingSec: speed && speed > 0.1 ? ((1 - progress) * cycleSec) / speed : null, lastDoneAt }
+}
+
+/** Son `hours` saatte çalışma etkinliği: Σ(hız × çalışma süresi) / pencere süresi */
+function effectiveness(s: MachineSeries, iFrom: number, iTo: number): number {
+  let w = 0
+  for (let i = Math.max(0, iFrom); i < iTo; i++) if (s.state[i] === STATE.RUNNING) w += s.speed[i]
+  return iTo > iFrom ? w / (iTo - iFrom) : 0
+}
+
 export function projection(s: MachineSeries, m: Machine, now: number): ProjectionInfo {
   const dayStart = dayStartOf(now)
   const dayEnd = dayStart + 24 * 3600 * 1000
   const iEnd = s.length
   const iDay = Math.max(0, Math.round((dayStart - s.startT) / BUCKET_MS))
   let okProduced = 0
-  for (let i = iDay; i < iEnd; i++) okProduced += s.ok[i]
-  // Son 60 dk (duruşlar dahil) OK üretim hızı — projeksiyon bu hızla yapılır
-  const win = 360
-  const iRecent = Math.max(iDay, iEnd - win)
-  let recentOk = 0
-  for (let i = iRecent; i < iEnd; i++) recentOk += s.ok[i]
-  const avgRate = iEnd > iRecent ? recentOk / ((iEnd - iRecent) * BUCKET_SEC) : 0
+  let total = 0
+  for (let i = iDay; i < iEnd; i++) {
+    okProduced += s.ok[i]
+    total += s.ok[i] + s.nok[i]
+  }
+  // Uzun çevrimlerde son 1 saatte hiç parça bitmeyebilir; hız, son 4 saatin çalışma etkinliğinden
+  const eff = effectiveness(s, iEnd - (4 * 3600) / BUCKET_SEC, iEnd)
+  const okShare = total > 0 ? okProduced / total : 1
+  const avgRate = m.idealRate * eff * okShare
+  const inProgress = cycleInfo(s, m).progress * m.batchSize
   const remainingDaySec = Math.max(0, (dayEnd - now) / 1000)
-  const remaining = Math.max(0, m.dailyTarget - okProduced)
-  const etaSec = remaining === 0 ? 0 : avgRate > 0 ? remaining / avgRate : null
-  const projected = okProduced + avgRate * remainingDaySec
+  const remaining = Math.max(0, m.dailyTarget - okProduced - inProgress)
+  const etaSec = okProduced >= m.dailyTarget ? 0 : avgRate > 0 ? remaining / avgRate : null
+  const projected = okProduced + inProgress + avgRate * remainingDaySec
   const verdict = okProduced >= m.dailyTarget ? 'done' : projected >= m.dailyTarget * 0.98 ? 'ontrack' : 'behind'
   return {
     produced: okProduced,
@@ -212,6 +267,15 @@ export function projection(s: MachineSeries, m: Machine, now: number): Projectio
     verdict,
     shortfall: Math.max(0, m.dailyTarget - projected),
   }
+}
+
+/** Parça sayısını gösterir: tam sayıysa "3", değilse "2,3" */
+export const parts = (x: number) => (Math.abs(x - Math.round(x)) < 0.05 ? String(Math.round(x)) : x.toFixed(1).replace('.', ','))
+
+/** Saat cinsinden süre: "3 sa", "2,5 sa", "45 dk" */
+export function hoursLabel(h: number): string {
+  if (h < 1) return `${Math.round(h * 60)} dk`
+  return `${Number.isInteger(h) ? h : h.toFixed(1).replace('.', ',')} sa`
 }
 
 export interface FailureStats {

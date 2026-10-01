@@ -1,5 +1,5 @@
 import { BUCKET_MS, BUCKET_SEC, STATE } from '@/lib/types'
-import type { Machine, StateCode } from '@/lib/types'
+import type { Machine, MachineType, StateCode } from '@/lib/types'
 import { between, gaussian, mulberry32 } from '@/lib/rng'
 import type { Rng } from '@/lib/rng'
 import { shiftOf } from './factoryDef'
@@ -18,7 +18,6 @@ import { shiftOf } from './factoryDef'
 
 const MIN = 60 * 1000
 const HOUR = 60 * MIN
-export const SPC_EVERY_BUCKETS = 90 // 15 dk
 export const SPC_N = 5
 const WARMUP_BUCKETS = 36 // 6 dk
 
@@ -45,18 +44,114 @@ interface Story {
 
 /** Demo için bilinçli gömülmüş "hikâyeler" (dakikalar simülatörün başladığı ana, t0'a göre). */
 export const STORIES: Record<string, Story> = {
+  // TRN-02: kesici uç aşınıyor → yavaşlama ve göbek çapı SPC'de kayıyor
   M02: { eff: 0.98, wear: true },
+  // TRN-03: program / fikstür değişimi sürüyor
   M03: { forced: [{ fromMin: -18, toMin: 9, kind: 'stop', state: STATE.CHANGEOVER, reasonId: 4 }] },
+  // TAS-01: soğutma sıvısı ısındı
   M04: { forced: [{ fromMin: -50, toMin: 30, kind: 'slow', reasonId: TRUTH.TEMP, factor: 0.84 }] },
-  M06: { forced: [{ fromMin: -35, toMin: 40, kind: 'stop', state: STATE.MAINTENANCE, reasonId: 8 }] },
-  M08: { eff: 0.97, rookieInB: true },
-  M09: { forced: [{ fromMin: -40, toMin: 20, kind: 'slow', reasonId: TRUTH.FEED, factor: 0.82 }] },
-  M10: { forced: [{ fromMin: -22, toMin: 14, kind: 'stop', state: STATE.STOPPED, reasonId: 6 }] },
-  M11: { forced: [{ fromMin: -40, toMin: 20, kind: 'slow', reasonId: TRUTH.FEED, factor: 0.8 }] },
-  // MNT-01: şu an hızla yıpranıyor; ~3 saat sonra motor arızası (model önceden uyarır)
+  // FRZ-01: iş mili bozuluyor; ~3 saat sonra arıza (öngörücü bakım önceden uyarır)
   M05: { degrade: { fromH: -30, failAtH: 3 }, forced: [{ fromMin: 180, toMin: 228, kind: 'stop', state: STATE.STOPPED, reasonId: 1 }] },
-  // PKT-04: 3 saat önceki motor arızası yıpranma kaynaklıydı (risk grafiğinde öncesi görünür)
-  M12: { degrade: { fromH: -30, failAtH: -170 / 60 }, forced: [{ fromMin: -170, toMin: -122, kind: 'stop', state: STATE.STOPPED, reasonId: 1 }] },
+  // FRZ-02: planlı bakımda
+  M06: { forced: [{ fromMin: -35, toMin: 40, kind: 'stop', state: STATE.MAINTENANCE, reasonId: 8 }] },
+  // FRZ-03: titreşim (chatter) yüzünden ilerleme düşürüldü
+  M07: { forced: [{ fromMin: -45, toMin: 25, kind: 'slow', reasonId: TRUTH.FEED, factor: 0.8 }] },
+  // FRZ-04: B vardiyasında yeni operatör
+  M08: { eff: 0.97, rookieInB: true },
+  // FRN-01: yeni şarj bekliyor (önceki operasyonlardan parça gelmedi)
+  M09: { forced: [{ fromMin: -22, toMin: 14, kind: 'stop', state: STATE.STOPPED, reasonId: 6 }] },
+  // FRN-02: ~3 saat önceki arızası yıpranma kaynaklıydı; model önceden uyarmıştı
+  M10: { degrade: { fromH: -30, failAtH: -170 / 60 }, forced: [{ fromMin: -170, toMin: -122, kind: 'stop', state: STATE.STOPPED, reasonId: 1 }] },
+  // KPL-01: toz besleme dalgalanıyor
+  M11: { forced: [{ fromMin: -40, toMin: 20, kind: 'slow', reasonId: TRUTH.FEED, factor: 0.8 }] },
+}
+
+/** Makine tipine göre duruş ve üretim profili (aralıklar: ortalama olay aralığı) */
+interface TypeProfile {
+  /** kısa duruş (talaş temizleme / kısa alarm) aralığı (dk) ve süresi (sn) */
+  micro: { everyMin: [number, number]; durSec: [number, number] } | null
+  changeover: { everyH: [number, number]; durMin: [number, number]; reasons: number[] } | null
+  material: { everyH: [number, number]; durMin: [number, number] } | null
+  qualityEveryH: number | null
+  staffingEveryH: number | null
+  plannedEveryH: [number, number]
+  /** belirtisiz ani arıza nedenleri */
+  suddenReasons: number[]
+  /** yıpranma kaynaklı arıza nedenleri */
+  degradeReasons: number[]
+  /** rastgele yavaşlama türleri */
+  slowPool: number[]
+  /** kalite ölçümü: dakika başı (null = çevrim/şarj sonunda) */
+  spcEveryMin: number | null
+  nok: [number, number]
+}
+
+const PROFILES: Record<MachineType, TypeProfile> = {
+  cnc: {
+    micro: { everyMin: [45, 90], durSec: [20, 180] },
+    changeover: { everyH: [12, 24], durMin: [30, 60], reasons: [4, 4, 5] },
+    material: { everyH: [16, 30], durMin: [10, 40] },
+    qualityEveryH: 20,
+    staffingEveryH: 60,
+    plannedEveryH: [24, 44],
+    suddenReasons: [2, 2, 3, 1],
+    degradeReasons: [1, 3],
+    slowPool: [TRUTH.MATERIAL, TRUTH.TEMP, TRUTH.FEED],
+    spcEveryMin: 30,
+    nok: [0.005, 0.02],
+  },
+  grinder: {
+    micro: { everyMin: [30, 60], durSec: [20, 120] },
+    changeover: { everyH: [16, 30], durMin: [20, 40], reasons: [4, 5] },
+    material: { everyH: [12, 24], durMin: [10, 30] },
+    qualityEveryH: 24,
+    staffingEveryH: 60,
+    plannedEveryH: [24, 44],
+    suddenReasons: [2, 1],
+    degradeReasons: [1],
+    slowPool: [TRUTH.TEMP, TRUTH.MATERIAL],
+    spcEveryMin: 20,
+    nok: [0.005, 0.015],
+  },
+  furnace: {
+    micro: null,
+    changeover: null, // şarj yükleme/boşaltma çevrim sonunda kendiliğinden
+    material: null,
+    qualityEveryH: null,
+    staffingEveryH: null,
+    plannedEveryH: [72, 120],
+    suddenReasons: [2, 1],
+    degradeReasons: [1],
+    slowPool: [],
+    spcEveryMin: null,
+    nok: [0.002, 0.008],
+  },
+  coating: {
+    micro: { everyMin: [30, 60], durSec: [30, 180] },
+    changeover: { everyH: [8, 14], durMin: [20, 40], reasons: [5] },
+    material: { everyH: [10, 20], durMin: [10, 30] },
+    qualityEveryH: 24,
+    staffingEveryH: 60,
+    plannedEveryH: [30, 50],
+    suddenReasons: [2, 1],
+    degradeReasons: [1],
+    slowPool: [TRUTH.FEED, TRUTH.TEMP],
+    spcEveryMin: 30,
+    nok: [0.008, 0.02],
+  },
+  cmm: {
+    micro: { everyMin: [120, 240], durSec: [60, 300] },
+    changeover: null,
+    material: { everyH: [3, 6], durMin: [20, 60] },
+    qualityEveryH: null,
+    staffingEveryH: 80,
+    plannedEveryH: [48, 96],
+    suddenReasons: [2],
+    degradeReasons: [2],
+    slowPool: [],
+    spcEveryMin: 120,
+    nok: [0.002, 0.006],
+  },
 }
 
 /** Hat bazında motorun nominal akımı (A) */
@@ -67,9 +162,9 @@ export function degradationHazardPerHour(d: number): number {
   return d < 0.55 ? 0 : 0.5 * Math.pow((d - 0.55) / 0.45, 3)
 }
 
-/** Takım ömrü (çevrim). ENJ-02 12 saatte bir takım değiştirir; diğerleri ürün değişiminde. */
+/** Takım ömrü (parça): ~12 saatlik kesme süresi. TRN-02 hikâyesinde kesici uç bu döngüyle değişir. */
 export function toolLifeCycles(m: Machine): number {
-  return Math.round((m.idealRate * 12 * 3600) / 1000) * 1000
+  return Math.max(1, Math.round(m.idealRate * 12 * 3600))
 }
 
 export interface RawSample {
@@ -107,6 +202,7 @@ interface Params {
   materialH: number
   spcBias: number
   spcOffset: number
+  spcEvery: number
   baseTemp: number
   /** Sıfırdan tam yıpranmaya kaç çalışma günü */
   degDays: number
@@ -133,6 +229,9 @@ export class MachineSim {
   private readonly p: Params
   private readonly story: Story
   private readonly t0: number
+  private readonly prof: TypeProfile
+  /** Fırın: içinde bulunulan şarjın ilerlemesi (0→1) */
+  private batchProgress = 0
   private seg: Seg | null = null
   private warmup = 0
   private slow: SlowEp | null = null
@@ -154,17 +253,21 @@ export class MachineSim {
     this.t0 = t0
     this.rng = mulberry32(1000 + idx * 7919)
     this.story = STORIES[machine.id] ?? {}
+    this.prof = PROFILES[machine.type]
     const r = this.rng
+    const pr = this.prof
+    const spcEvery = Math.round(((pr.spcEveryMin ?? 30) * 60) / BUCKET_SEC)
     this.p = {
       eff: this.story.eff ?? between(r, 0.93, 0.985),
-      baseNok: between(r, 0.004, 0.016),
+      baseNok: between(r, pr.nok[0], pr.nok[1]),
       mtbfMin: between(r, 420, 900),
-      microMin: between(r, 14, 32),
-      changeoverH: between(r, 10, 18),
-      plannedH: between(r, 24, 44),
-      materialH: between(r, 9, 16),
+      microMin: pr.micro ? between(r, pr.micro.everyMin[0], pr.micro.everyMin[1]) : 0,
+      changeoverH: pr.changeover ? between(r, pr.changeover.everyH[0], pr.changeover.everyH[1]) : 0,
+      plannedH: between(r, pr.plannedEveryH[0], pr.plannedEveryH[1]),
+      materialH: pr.material ? between(r, pr.material.everyH[0], pr.material.everyH[1]) : 0,
       spcBias: gaussian(r) * 0.15,
-      spcOffset: Math.floor(r() * SPC_EVERY_BUCKETS),
+      spcOffset: Math.floor(r() * spcEvery),
+      spcEvery,
       baseTemp: 40 + idx * 0.6,
       degDays: 0,
       baseCurrent: 0,
@@ -204,47 +307,61 @@ export class MachineSim {
     const per = (meanSec: number) => BUCKET_SEC / meanSec
     const sh = shiftOf(t)
     const hazard = sh === 'C' ? 1.6 : sh === 'B' ? 1.05 : 1
+    const pr = this.prof
+    const pickR = (list: number[], rnd: Rng) => list[Math.floor(rnd() * list.length)]
     // Yıpranma kaynaklı arıza (hikâye rampasındayken arıza zamanı hikâyece belirlenir)
     if (this.storyRamp(t) === null && this.drng() < (degradationHazardPerHour(this.deg) * BUCKET_SEC) / 3600) {
-      this.seg = { state: STATE.STOPPED, reasonId: this.drng() < 0.7 ? 1 : 3, remaining: b(between(this.drng, 40, 120) * 60), deg: true }
+      this.seg = { state: STATE.STOPPED, reasonId: pickR(pr.degradeReasons, this.drng), remaining: b(between(this.drng, 40, 120) * 60), deg: true }
       return
     }
     const u = r()
-    // Ani (belirtisiz) arızalar: çoğunlukla sensör/PLC
+    // Ani (belirtisiz) arızalar: çoğunlukla kontrol / elektrik
     let c = per(p.mtbfMin * 60 * 30) * hazard
     if (u < c) {
-      const rr = r()
-      this.seg = { state: STATE.STOPPED, reasonId: rr < 0.6 ? 2 : rr < 0.8 ? 1 : 3, remaining: b(between(r, 20, 90) * 60) }
+      this.seg = { state: STATE.STOPPED, reasonId: pickR(pr.suddenReasons, r), remaining: b(between(r, 20, 90) * 60) }
       return
     }
-    c += per(p.microMin * 60) * (1 + 2.5 * this.deg * this.deg)
-    if (u < c) {
-      this.seg = { state: STATE.STOPPED, reasonId: 10, remaining: b(between(r, 20, 120)) }
-      return
+    if (pr.micro) {
+      c += per(p.microMin * 60) * (1 + 2.5 * this.deg * this.deg)
+      if (u < c) {
+        this.seg = { state: STATE.STOPPED, reasonId: 10, remaining: b(between(r, pr.micro.durSec[0], pr.micro.durSec[1])) }
+        return
+      }
     }
-    if (!nearNow) c += per(p.changeoverH * 3600)
-    if (!nearNow && u < c) {
-      this.seg = { state: STATE.CHANGEOVER, reasonId: r() < 0.7 ? 4 : 5, remaining: b(between(r, 15, 35) * 60) }
-      return
+    if (pr.changeover && !nearNow) {
+      c += per(p.changeoverH * 3600)
+      if (u < c) {
+        const co = pr.changeover
+        this.seg = { state: STATE.CHANGEOVER, reasonId: pickR(co.reasons, r), remaining: b(between(r, co.durMin[0], co.durMin[1]) * 60) }
+        return
+      }
     }
-    if (!nearNow) c += per(p.plannedH * 3600)
-    if (!nearNow && u < c) {
-      const clean = r() < 0.35
-      this.seg = { state: STATE.MAINTENANCE, reasonId: clean ? 11 : 8, remaining: b((clean ? between(r, 15, 30) : between(r, 30, 60)) * 60) }
-      return
+    if (!nearNow) {
+      c += per(p.plannedH * 3600)
+      if (u < c) {
+        const clean = r() < 0.35
+        this.seg = { state: STATE.MAINTENANCE, reasonId: clean ? 11 : 8, remaining: b((clean ? between(r, 15, 30) : between(r, 45, 120)) * 60) }
+        return
+      }
     }
-    c += per(p.materialH * 3600)
-    if (u < c) {
-      this.seg = { state: STATE.STOPPED, reasonId: 6, remaining: b(between(r, 5, 20) * 60) }
-      return
+    if (pr.material) {
+      c += per(p.materialH * 3600)
+      if (u < c) {
+        this.seg = { state: STATE.STOPPED, reasonId: 6, remaining: b(between(r, pr.material.durMin[0], pr.material.durMin[1]) * 60) }
+        return
+      }
     }
-    c += per(60 * 3600)
-    if (u < c) {
-      this.seg = { state: STATE.STOPPED, reasonId: 7, remaining: b(between(r, 10, 25) * 60) }
-      return
+    if (pr.staffingEveryH) {
+      c += per(pr.staffingEveryH * 3600)
+      if (u < c) {
+        this.seg = { state: STATE.STOPPED, reasonId: 7, remaining: b(between(r, 10, 25) * 60) }
+        return
+      }
     }
-    c += per(30 * 3600)
-    if (u < c) this.seg = { state: STATE.STOPPED, reasonId: 9, remaining: b(between(r, 8, 20) * 60) }
+    if (pr.qualityEveryH) {
+      c += per(pr.qualityEveryH * 3600)
+      if (u < c) this.seg = { state: STATE.STOPPED, reasonId: 9, remaining: b(between(r, 15, 40) * 60) }
+    }
   }
 
   /** Aşınma yaşı (saat): 12 saatte bir takım değişir, t0'da yaş 8 sa. */
@@ -354,8 +471,8 @@ export class MachineSim {
         this.slow.remaining -= 1
         if (this.slow.remaining < 0) this.slow = null
       }
-      if (!this.slow && r() < BUCKET_SEC / (7 * 3600)) {
-        const pool = [TRUTH.MATERIAL, TRUTH.TEMP, TRUTH.FEED]
+      if (!this.slow && r() < BUCKET_SEC / (7 * 3600) && this.prof.slowPool.length) {
+        const pool = this.prof.slowPool
         const cause = pool[Math.floor(r() * pool.length)]
         this.slow = { cause, factor: between(r, 0.72, 0.86), remaining: Math.round(between(r, 20, 60) * 6) }
         if (cause === TRUTH.MATERIAL) this.lotNo++
@@ -395,9 +512,23 @@ export class MachineSim {
     }
     const speed = Math.max(0.05, base * prod * (1 - 0.04 * d * d))
 
-    this.acc += m.idealRate * BUCKET_SEC * speed
-    const total = Math.floor(this.acc)
-    this.acc -= total
+    let total: number
+    let batchDone = false
+    if (m.type === 'furnace') {
+      // Şarj: çevrim bitince tüm parçalar birden çıkar, ardından yükleme/boşaltma
+      this.batchProgress += (BUCKET_SEC * speed * m.idealRate) / m.batchSize
+      total = 0
+      if (this.batchProgress >= 1) {
+        this.batchProgress = 0
+        total = m.batchSize
+        batchDone = true
+        this.seg = { state: STATE.CHANGEOVER, reasonId: 12, remaining: Math.round(between(r, 30, 60) * 6) }
+      }
+    } else {
+      this.acc += m.idealRate * BUCKET_SEC * speed
+      total = Math.floor(this.acc)
+      this.acc -= total
+    }
 
     let pNok = this.p.baseNok
     pNok += Math.max(0, 0.93 - warmFactor) * 0.2
@@ -405,8 +536,9 @@ export class MachineSim {
     if (slowCause === TRUTH.MATERIAL) pNok += 0.02
     if (slowFactor < 0.9) pNok += 0.004
     pNok = Math.min(0.2, pNok)
-    let nok = Math.round(total * pNok + gaussian(r) * Math.sqrt(total * pNok * (1 - pNok)))
-    nok = Math.max(0, Math.min(total, nok))
+    // Her parça ayrı ayrı uygun / uygunsuz (az adetli üretim)
+    let nok = 0
+    for (let k = 0; k < total; k++) if (r() < pNok) nok++
     this.toolCycles += total
 
     // Sinyaller
@@ -418,7 +550,8 @@ export class MachineSim {
     const cycleJitter = 1 + gaussian(this.drng) * (0.004 + 0.04 * d * d)
 
     let quality: number[] | null = null
-    if ((i + this.p.spcOffset) % SPC_EVERY_BUCKETS === 0) {
+    const spcDue = this.prof.spcEveryMin === null ? batchDone : (i + this.p.spcOffset) % this.p.spcEvery === 0
+    if (spcDue) {
       const spec = m.spec
       const drift = this.story.wear ? 0.2 * spec.sigma * this.wearAgeH(t) : 0
       quality = []

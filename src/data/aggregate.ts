@@ -7,12 +7,13 @@ import type { Machine } from '@/lib/types'
 const HOUR = 3600 * 1000
 
 /** Saat başlarına hizalı son n dilim (sonuncusu içinde bulunulan saat). */
-export function hourSlices(now: number, n: number): { t0: number; t1: number }[] {
-  const cur = Math.floor(now / HOUR) * HOUR
+export function hourSlices(now: number, n: number, sizeH = 1): { t0: number; t1: number }[] {
+  const size = sizeH * HOUR
+  const cur = Math.floor(now / size) * size
   const out: { t0: number; t1: number }[] = []
   for (let k = n - 1; k >= 0; k--) {
-    const t0 = cur - k * HOUR
-    out.push({ t0, t1: Math.min(t0 + HOUR, now) })
+    const t0 = cur - k * size
+    out.push({ t0, t1: Math.min(t0 + size, now) })
   }
   return out
 }
@@ -23,8 +24,8 @@ export function kpiFor(machines: Machine[], t0: number, t1: number): Kpi {
   return sumKpi(machines.map((m) => machineKpi(source.machineSeries(m.id), m, i0, i1)))
 }
 
-export function hourlyKpi(machines: Machine[], now: number, n: number): { t0: number; t1: number; kpi: Kpi }[] {
-  return hourSlices(now, n).map((s) => ({ ...s, kpi: kpiFor(machines, s.t0, s.t1) }))
+export function hourlyKpi(machines: Machine[], now: number, n: number, sizeH = 1): { t0: number; t1: number; kpi: Kpi }[] {
+  return hourSlices(now, n, sizeH).map((s) => ({ ...s, kpi: kpiFor(machines, s.t0, s.t1) }))
 }
 
 export const machinesOfLine = (lineId: string) => MACHINES.filter((m) => m.lineId === lineId)

@@ -95,8 +95,8 @@ export default function People() {
             <thead className="text-fg-2">
               <tr className="border-b">
                 <th className="px-4 py-2 text-left font-medium">Vardiya</th>
-                <th className="px-2 py-2 text-right font-medium">OK</th>
-                <th className="px-2 py-2 text-right font-medium">Hurda</th>
+                <th className="px-2 py-2 text-right font-medium">Parça</th>
+                <th className="px-2 py-2 text-right font-medium">Uygunsuz</th>
                 <th className="px-2 py-2 text-right font-medium">Arıza dk</th>
                 <th className="px-4 py-2 text-right font-medium">OEE</th>
               </tr>
@@ -133,7 +133,7 @@ export default function People() {
         </span>
       </div>
 
-      <section className="grid grid-cols-3 gap-4">
+      <section className="grid grid-cols-4 gap-4">
         {data.foremen.map((f) => (
           <Card key={f.l.id} className="flex items-center gap-3 px-4 py-3.5">
             <Avatar person={f.person} size={48} />
@@ -147,7 +147,7 @@ export default function People() {
             </div>
             <div className="text-right text-xs text-fg-2">
               <div className="tnum text-base font-semibold text-fg">{num(f.k.ok)}</div>
-              adet
+              parça
             </div>
           </Card>
         ))}
@@ -177,7 +177,7 @@ export default function People() {
               </div>
               <dl className="grid grid-cols-3 gap-2 text-[11px]">
                 <div><dt className="text-fg-2">Üretim</dt><dd className="tnum text-xs font-medium">{num(k.ok)}</dd></div>
-                <div><dt className="text-fg-2">NOK</dt><dd className="tnum text-xs font-medium">{pct(k.total ? k.nok / k.total : 0, 1)}</dd></div>
+                <div><dt className="text-fg-2">Uygunsuz</dt><dd className="tnum text-xs font-medium">{pct(k.total ? k.nok / k.total : 0, 1)}</dd></div>
                 <div><dt className="text-fg-2">Duruş</dt><dd className="tnum text-xs font-medium">{fmtDuration(k.totalSec - k.runSec - k.plannedStopSec)}</dd></div>
               </dl>
             </Link>

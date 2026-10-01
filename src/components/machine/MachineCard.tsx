@@ -7,7 +7,8 @@ import { Meter } from '@/components/ui/meter'
 import { REASON_BY_ID, SLOW_REASONS } from '@/data/registry'
 import { activeRisk } from '@/data/predictiveView'
 import type { MachineLive } from '@/data/snapshot'
-import { dayStartOf, fmtDuration, num, pct } from '@/lib/kpi'
+import { dayStartOf, fmtDuration, hoursLabel, num, parts, pct } from '@/lib/kpi'
+import { idealCycleHours } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
 const hhmm = (t: number, now: number) => {
@@ -22,7 +23,6 @@ export function MachineCard({ live, now }: { live: MachineLive; now: number }) {
   const running = live.state === 0
   const durSec = (now - live.sinceT) / 1000
   const elapsed = (now - dayStartOf(now)) / 86400e3
-  const nokRate = live.kpiDay.total > 0 ? live.kpiDay.nok / live.kpiDay.total : 0
   const r = activeRisk(m.id, live.state, live.reasonId)
   const risk = r?.level === 'alarm' ? r : null
   const etaAt = proj.etaSec !== null && proj.etaSec > 0 ? now + proj.etaSec * 1000 : null
@@ -43,7 +43,7 @@ export function MachineCard({ live, now }: { live: MachineLive; now: number }) {
   } else {
     planLine = (
       <span className="flex items-center gap-1 text-warning-text">
-        <AlertTriangle className="size-3.5" /> Yetişmez · <b className="tnum">−{num(Math.round(proj.shortfall / 10) * 10)}</b> adet
+        <AlertTriangle className="size-3.5" /> Yetişmez · <b className="tnum">−{parts(proj.shortfall)}</b> parça
       </span>
     )
   }
@@ -57,10 +57,13 @@ export function MachineCard({ live, now }: { live: MachineLive; now: number }) {
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 leading-tight">
           <div className="flex items-baseline gap-1.5">
-            <span className="text-sm font-semibold">{m.code}</span>
+            <span className="shrink-0 whitespace-nowrap text-sm font-semibold">{m.code}</span>
             <span className="truncate text-xs text-fg-2">{m.product}</span>
           </div>
-          <div className="mt-0.5 truncate text-[11px] text-fg-2">{m.name}</div>
+          <div className="mt-0.5 truncate text-[11px] text-fg-2">
+            {m.partNumber} · {m.operation}
+            {m.batchSize > 1 && ` · şarj ${m.batchSize}`}
+          </div>
         </div>
         <div className="flex flex-col items-end gap-1">
           <StatusBadge state={live.stateKey} />
@@ -73,13 +76,13 @@ export function MachineCard({ live, now }: { live: MachineLive; now: number }) {
       </div>
 
       <div className="flex items-end justify-between gap-2">
-        <div>
+        <div className="min-w-0">
           <div className="flex items-baseline gap-1">
-            <span className="tnum text-2xl font-semibold leading-none">{live.ratePerSec.toFixed(2).replace('.', ',')}</span>
-            <span className="text-xs text-fg-2">ürün/sn</span>
+            <span className="tnum text-2xl font-semibold leading-none">{pct(live.cycle.progress, 0)}</span>
+            <span className="text-xs text-fg-2">{m.batchSize > 1 ? 'şarj' : 'parça'} tamam</span>
           </div>
           <div className="mt-1 text-[11px] text-fg-2">
-            ideal <span className="tnum">{m.idealRate.toFixed(1).replace('.', ',')}</span>
+            {live.cycle.remainingSec !== null && running ? <>kalan ~{fmtDuration(live.cycle.remainingSec)}</> : <>ideal çevrim {hoursLabel(idealCycleHours(m))}</>}
             {running && (
               <>
                 {' · '}hız <b className={cn('tnum', live.slow ? 'text-warning-text' : 'text-fg')}>{pct(live.speedPct, 0)}</b>
@@ -87,7 +90,10 @@ export function MachineCard({ live, now }: { live: MachineLive; now: number }) {
             )}
           </div>
         </div>
-        <Sparkline data={live.spark} ideal={m.idealRate} color={st.var === 'var(--good)' ? 'var(--series-1)' : 'var(--fg-3)'} />
+        <Sparkline data={live.spark} ideal={1} color={st.var === 'var(--good)' ? 'var(--series-1)' : 'var(--fg-3)'} label="Son 2 saat ilerleme hızı" />
+      </div>
+      <div className="-mt-1 h-1 w-full overflow-hidden rounded-full bg-wash" aria-hidden>
+        <div className="h-full rounded-full bg-s1/60" style={{ width: `${live.cycle.progress * 100}%` }} />
       </div>
 
       <div className="min-h-[22px] text-xs">
@@ -111,10 +117,10 @@ export function MachineCard({ live, now }: { live: MachineLive; now: number }) {
 
       <div className="flex items-center justify-between text-xs text-fg-2">
         <span>
-          OK <b className="tnum text-fg">{num(live.kpiDay.ok)}</b>
+          Bugün <b className="tnum text-fg">{num(live.kpiDay.ok)}</b> parça
         </span>
         <span>
-          NOK <b className={cn('tnum', nokRate > 0.02 ? 'text-warning-text' : 'text-fg')}>{num(live.kpiDay.nok)}</b> <span className="tnum">({pct(nokRate)})</span>
+          Uygunsuz <b className={cn('tnum', live.kpiDay.nok > 0 ? 'text-warning-text' : 'text-fg')}>{num(live.kpiDay.nok)}</b>
         </span>
         <span>
           OEE <b className="tnum text-fg">{pct(live.kpiShift.oee, 0)}</b>
@@ -125,7 +131,7 @@ export function MachineCard({ live, now }: { live: MachineLive; now: number }) {
         <div className="flex items-center justify-between text-xs">
           <span className="text-fg-2">Günlük hedef</span>
           <span className="tnum font-medium">
-            {pct(proj.progress, 0)} <span className="font-normal text-fg-2">/ {num(m.dailyTarget)}</span>
+            {num(proj.produced)} <span className="font-normal text-fg-2">/ {num(m.dailyTarget)} parça</span>
           </span>
         </div>
         <Meter value={proj.progress} marker={Math.min(1, Math.max(0, elapsed))} color={proj.verdict === 'behind' ? 'var(--serious)' : 'var(--series-1)'} />

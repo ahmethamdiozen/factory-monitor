@@ -48,7 +48,7 @@ export default function Quality() {
   }, [mid, now, m])
 
   const lineTrend = useMemo(
-    () => LINES.map((l) => ({ l, data: hourlyKpi(machinesOfLine(l.id), now, 12).map((h) => [h.t0 + 1800e3, h.kpi.total ? h.kpi.nok / h.kpi.total : 0]) })),
+    () => LINES.map((l) => ({ l, data: hourlyKpi(machinesOfLine(l.id), now, 8, 6).map((h) => [h.t0 + 3 * 3600e3, h.kpi.total ? h.kpi.nok / h.kpi.total : 0]) })),
     [now],
   )
 
@@ -147,7 +147,7 @@ export default function Quality() {
       grid: { left: 44, right: 14, top: 28, bottom: 24 },
       legend: { top: 0, left: 0, icon: 'roundRect', itemWidth: 12, itemHeight: 4, textStyle: { color: t.fg2 } },
       tooltip: { ...(baseOption(t).tooltip as object), trigger: 'axis', valueFormatter: (v: number) => `%${(v * 100).toFixed(2)}` },
-      xAxis: { ...timeAxisStyle(t), min: now - 11.5 * 3600e3 - (now % 3600e3), max: now, axisLabel: { color: t.fg3, formatter: (v: number) => hhmm(v), hideOverlap: true } },
+      xAxis: { ...timeAxisStyle(t), min: now - 48 * 3600e3, max: now, axisLabel: { color: t.fg3, formatter: (v: number) => hhmm(v), hideOverlap: true } },
       yAxis: { ...valueAxisStyle(t), min: 0, axisLabel: { color: t.fg3, formatter: (v: number) => `%${(v * 100).toFixed(1).replace('.', ',')}` } },
       series: lineTrend.map((d, i) => ({ name: d.l.short, type: 'line', data: d.data, showSymbol: false, lineStyle: { width: 2 }, itemStyle: { color: t.series[i] } })),
     }),
@@ -158,7 +158,7 @@ export default function Quality() {
     () => ({
       ...baseOption(t),
       grid: { left: 170, right: 70, top: 6, bottom: 6 },
-      tooltip: { ...(baseOption(t).tooltip as object), trigger: 'axis', axisPointer: { type: 'shadow' }, valueFormatter: (v: number) => `${num(Math.round(v))} adet` },
+      tooltip: { ...(baseOption(t).tooltip as object), trigger: 'axis', axisPointer: { type: 'shadow' }, valueFormatter: (v: number) => `${(Math.round(v * 10) / 10).toString().replace('.', ',')} parça` },
       xAxis: { type: 'value', show: false },
       yAxis: { ...categoryAxisStyle(t, stats.defectRows.map((r) => r[0])), inverse: true, axisLine: { show: false }, axisLabel: { color: t.fg2, width: 160, overflow: 'truncate' } },
       series: [{ type: 'bar', data: stats.defectRows.map((r) => r[1]), barWidth: 12, itemStyle: { color: t.series[1], borderRadius: [0, 4, 4, 0] }, label: { show: true, position: 'right', color: t.fg2, formatter: (p: { value: number }) => num(Math.round(p.value)) } }],
@@ -205,14 +205,14 @@ export default function Quality() {
 
       <section className="grid grid-cols-5 gap-4">
         <StatTile label="İlk geçiş verimi (FPY)" value={pct(stats.total.quality, 2)} sub={<>{WINDOW_LABEL[win]}</>} />
-        <StatTile label="NOK adet" value={num(stats.total.nok)} sub={<>Toplam {num(stats.total.total)} üründen</>} />
+        <StatTile label="Uygunsuz parça" value={num(stats.total.nok)} sub={<>Toplam {num(stats.total.total)} parçadan · MRB</>} />
         <StatTile label={`Cpk · ${m.code}`} value={cpk === null ? '—' : cpk.toFixed(2).replace('.', ',')} valueClass={cpkStatus?.cls} sub={cpkStatus && <span className={cn('inline-flex items-center gap-1 font-medium', cpkStatus.cls)}><cpkStatus.Icon className="size-3.5" />{cpkStatus.text} · Cp {spc.cap ? spc.cap.cp.toFixed(2).replace('.', ',') : '—'}</span>}><span className="text-[11px] text-fg-2">Hedef Cpk ≥ 1,33</span></StatTile>
         <StatTile label={`SPC ihlali · ${m.code}`} value={String(violCount)} valueClass={violCount > 0 ? 'text-warning-text' : 'text-good-text'} sub={violCount > 0 ? <>Kural {lastRules.join(', ')} · son {SPC_POINTS} ölçüm</> : <>Süreç kontrol altında</>} />
         <StatTile label="Ölçülen özellik" value={m.spec.characteristic} valueClass="!text-lg leading-tight" sub={<>Nominal {String(m.spec.nominal).replace('.', ',')} {m.spec.unit}<br />Tolerans {String(m.spec.lsl).replace('.', ',')}–{String(m.spec.usl).replace('.', ',')}</>} />
       </section>
 
       <Card>
-        <CardHeader title={`x̄–R kontrol grafiği · ${m.code}`} subtitle={`${m.spec.characteristic} (${m.spec.unit}) · her 15 dakikada 5'li alt grup · son ${SPC_POINTS} ölçüm · kırmızı halka: Western Electric kural ihlali`} />
+        <CardHeader title={`x̄–R kontrol grafiği · ${m.code}`} subtitle={`${m.spec.characteristic} (${m.spec.unit}) · ara ölçümler 5'li alt gruplarda · son ${SPC_POINTS} ölçüm · kırmızı halka: Western Electric kural ihlali`} />
         <div className="px-2 pt-1">
           <EChart option={xbarOption} height={260} label="x-bar kontrol grafiği" />
           <EChart option={rOption} height={130} label="R kontrol grafiği" />
@@ -231,16 +231,16 @@ export default function Quality() {
 
       <section className="grid grid-cols-3 gap-4">
         <Card>
-          <CardHeader title="Hatlara göre NOK oranı" subtitle="Son 12 saat · saatlik" />
-          <div className="px-2 pb-2 pt-1"><EChart option={trendOption} height={260} label="Hat bazlı saatlik NOK oranı" /></div>
+          <CardHeader title="Hücrelere göre uygunsuzluk oranı" subtitle="Son 48 saat · 6 saatlik dilimler" />
+          <div className="px-2 pb-2 pt-1"><EChart option={trendOption} height={260} label="Hücre bazlı uygunsuzluk oranı" /></div>
         </Card>
         <Card>
-          <CardHeader title="Hata tipi Pareto" subtitle={`${WINDOW_LABEL[win]} · yer tutucu dağılım`} />
-          <div className="px-2 pb-2 pt-1"><EChart option={defectOption} height={260} label="Hata tipi Pareto grafiği" /></div>
+          <CardHeader title="Uygunsuzluk türü Pareto" subtitle={`${WINDOW_LABEL[win]} · yer tutucu dağılım`} />
+          <div className="px-2 pb-2 pt-1"><EChart option={defectOption} height={260} label="Uygunsuzluk türü Pareto grafiği" /></div>
         </Card>
         <Card>
-          <CardHeader title="Makineye göre NOK oranı" subtitle={`${WINDOW_LABEL[win]} · en yüksek 3 vurgulu`} />
-          <div className="px-2 pb-2 pt-1"><EChart option={machineOption} height={260} label="Makine bazlı NOK oranı" /></div>
+          <CardHeader title="Makineye göre uygunsuzluk oranı" subtitle={`${WINDOW_LABEL[win]} · en yüksek 3 vurgulu`} />
+          <div className="px-2 pb-2 pt-1"><EChart option={machineOption} height={260} label="Makine bazlı uygunsuzluk oranı" /></div>
         </Card>
       </section>
     </div>

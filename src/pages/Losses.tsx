@@ -195,7 +195,7 @@ export default function Losses() {
   const cols = useMemo<ColDef<Row>[]>(
     () => [
       { field: 'code', headerName: 'Makine', width: 110, pinned: 'left' },
-      { field: 'line', headerName: 'Hat', width: 90 },
+      { field: 'line', headerName: 'Hücre', width: 100 },
       { field: 'oee', headerName: 'OEE', width: 100, valueFormatter: (p) => pct(p.value, 1), cellStyle: (p) => ({ fontWeight: 600, color: p.value >= OEE_WORLD_CLASS ? 'var(--good-text)' : p.value < 0.65 ? 'var(--critical-text)' : 'var(--fg)' }) },
       { field: 'a', headerName: 'Kullanılabilirlik', width: 150, valueFormatter: (p) => pct(p.value, 1) },
       { field: 'p', headerName: 'Performans', width: 130, valueFormatter: (p) => pct(p.value, 1) },
@@ -208,7 +208,7 @@ export default function Losses() {
     [],
   )
 
-  const lineOptions = [{ value: 'all', label: 'Tüm hatlar' }, ...LINES.map((l) => ({ value: l.id, label: l.short }))]
+  const lineOptions = [{ value: 'all', label: 'Tüm hücreler' }, ...LINES.map((l) => ({ value: l.id, label: l.short }))]
 
   return (
     <div className="mx-auto flex max-w-[1500px] flex-col gap-5">
@@ -244,13 +244,13 @@ export default function Losses() {
           <div className="px-2 pb-2 pt-1"><EChart option={heatOption} height={data.machines.length * 28 + 80} label="Makine ve saate göre duruş ısı haritası" /></div>
         </Card>
         <Card className="col-span-2">
-          <CardHeader title="Yavaşlık nedenleri" subtitle={`${WINDOW_LABEL[win]} · tahmini kayıp adet`} />
+          <CardHeader title="Yavaşlık nedenleri" subtitle={`${WINDOW_LABEL[win]} · ideal hıza göre kayıp süre`} />
           <ul className="space-y-3 px-4 pb-4 pt-3">
             {slowRows.map(([r, v]) => (
               <li key={r}>
                 <div className="mb-1 flex justify-between text-xs">
                   <span>{SLOW_REASONS[r]?.label}</span>
-                  <span className="tnum font-medium">{num(Math.round(v))} <span className="font-normal text-fg-2">adet</span></span>
+                  <span className="tnum font-medium">{fmtDuration(v)}</span>
                 </div>
                 <div className="h-1.5 rounded-full bg-wash"><div className="h-full rounded-full" style={{ width: `${(v / slowMax) * 100}%`, background: 'var(--series-2)' }} /></div>
               </li>

@@ -9,13 +9,13 @@ import { StatusBadge } from '@/components/machine/StatusBadge'
 import { Card, CardHeader } from '@/components/ui/card'
 import { Meter } from '@/components/ui/meter'
 import { StatTile } from '@/components/ui/stat-tile'
-import { hourSlices } from '@/data/aggregate'
-import { cumulativeOk, downtimeByReason, rateSlices, slowLossByReason, slowSegments, speedHistogram, stateSegments } from '@/data/machineView'
+import { cumulativeOk, downtimeByReason, slowLossByReason, slowSegments, speedHistogram, speedSlices, stateSegments } from '@/data/machineView'
+import { completions } from '@/data/shiftView'
 import { LINE_BY_ID, MACHINE_BY_ID, REASON_BY_ID, SLOW_REASONS } from '@/data/registry'
 import { useSnapshot } from '@/data/snapshot'
 import { source } from '@/data/store'
-import { dayStartOf, failureStats, fmtDuration, idxOf, machineKpi, num, pct } from '@/lib/kpi'
-import { BUCKET_MS } from '@/lib/types'
+import { dayStartOf, failureStats, fmtDuration, hoursLabel, idxOf, machineKpi, num, parts, pct } from '@/lib/kpi'
+import { BUCKET_MS, idealCycleHours } from '@/lib/types'
 
 const HOUR = 3600e3
 
@@ -59,15 +59,12 @@ export default function MachineDetail() {
     return {
       seg: stateSegments(s, i8, i1),
       slow: slowSegments(s, i8, i1),
-      rate: rateSlices(s, i8, i1, 30),
+      rate: speedSlices(s, i8, i1, 30),
       cum: cumulativeOk(s, iDay, 90),
       hist: speedHistogram(s, i8, i1),
       down: downtimeByReason(s, iDay, i1),
       slowLoss: slowLossByReason(s, m, i8, i1),
-      hourly: hourSlices(now, 12).map((h) => {
-        const k = machineKpi(s, m, Math.max(0, idxOf(source, h.t0)), idxOf(source, h.t1))
-        return { t: h.t0, nok: k.total > 0 ? k.nok / k.total : 0, total: k.total }
-      }),
+      finished: completions([m.id], now - 48 * HOUR, now),
       fail: failureStats(stops, new Set([m.id]), dayStartOf(now), now, kpiDay.runSec),
       events: stops.filter((e) => e.machineId === m.id).slice(-8).reverse(),
       i8,
@@ -80,12 +77,12 @@ export default function MachineDetail() {
       ...baseOption(t),
       grid: { left: 44, right: 14, top: 26, bottom: 24 },
       legend: { top: 0, left: 0, icon: 'roundRect', itemWidth: 12, itemHeight: 4, textStyle: { color: t.fg2 } },
-      tooltip: { ...(baseOption(t).tooltip as object), trigger: 'axis', valueFormatter: (v: number) => `${v.toFixed(2).replace('.', ',')} ürün/sn` },
+      tooltip: { ...(baseOption(t).tooltip as object), trigger: 'axis', valueFormatter: (v: number) => `%${Math.round(v * 100)}` },
       xAxis: { ...timeAxisStyle(t), min: now - 8 * HOUR, max: now, axisLabel: { color: t.fg3, formatter: (v: number) => hhmm(v), hideOverlap: true } },
-      yAxis: { ...valueAxisStyle(t), min: 0, max: Math.ceil(m.idealRate * 1.15 * 10) / 10 },
+      yAxis: { ...valueAxisStyle(t), min: 0, max: 1.2, axisLabel: { color: t.fg3, formatter: (v: number) => `%${Math.round(v * 100)}` } },
       series: [
-        { name: 'Gerçek (5 dk ort.)', type: 'line', data: view.rate, showSymbol: false, lineStyle: { width: 2 }, itemStyle: { color: t.series[0] } },
-        { name: 'İdeal', type: 'line', data: [[now - 8 * HOUR, m.idealRate], [now, m.idealRate]], showSymbol: false, silent: true, lineStyle: { width: 1.5, type: 'dashed', color: t.fg3 }, itemStyle: { color: t.fg3 } },
+        { name: 'İlerleme hızı (5 dk ort.)', type: 'line', data: view.rate, showSymbol: false, lineStyle: { width: 2 }, itemStyle: { color: t.series[0] } },
+        { name: 'İdeal', type: 'line', data: [[now - 8 * HOUR, 1], [now, 1]], showSymbol: false, silent: true, lineStyle: { width: 1.5, type: 'dashed', color: t.fg3 }, itemStyle: { color: t.fg3 } },
       ],
     }
   }, [m, view, t, now])
@@ -100,36 +97,48 @@ export default function MachineDetail() {
       ...baseOption(t),
       grid: { left: 56, right: 14, top: 26, bottom: 24 },
       legend: { top: 0, left: 0, icon: 'roundRect', itemWidth: 12, itemHeight: 4, textStyle: { color: t.fg2 } },
-      tooltip: { ...(baseOption(t).tooltip as object), trigger: 'axis', valueFormatter: (v: number) => `${num(Math.round(v))} adet` },
+      tooltip: { ...(baseOption(t).tooltip as object), trigger: 'axis', valueFormatter: (v: number) => `${parts(v)} parça` },
       xAxis: { ...timeAxisStyle(t), min: day0, max: endT, axisLabel: { color: t.fg3, formatter: (v: number) => hhmm(v), hideOverlap: true } },
-      yAxis: { ...valueAxisStyle(t), min: 0, max: Math.max(m.dailyTarget * 1.05, (last?.[1] ?? 0) + rate * ((endT - now) / 1000)), axisLabel: { color: t.fg3, formatter: (v: number) => num(v / 1000) + ' bin' } },
+      yAxis: { ...valueAxisStyle(t), min: 0, max: Math.max(m.dailyTarget * 1.05, (last?.[1] ?? 0) + rate * ((endT - now) / 1000)), axisLabel: { color: t.fg3, formatter: (v: number) => parts(v) } },
       series: [
         { name: 'Plan (doğrusal)', type: 'line', data: [[day0, 0], [endT, m.dailyTarget]], showSymbol: false, silent: true, lineStyle: { width: 1.5, type: 'dashed', color: t.fg3 }, itemStyle: { color: t.fg3 } },
         { name: 'Gerçekleşen OK', type: 'line', data: view.cum, showSymbol: false, lineStyle: { width: 2 }, itemStyle: { color: t.series[0] }, areaStyle: { color: t.series[0], opacity: 0.12 } },
-        { name: 'Tahmin (son 60 dk hızı)', type: 'line', data: [[now, last?.[1] ?? 0], [endT, (last?.[1] ?? 0) + rate * ((endT - now) / 1000)]], showSymbol: false, lineStyle: { width: 2, type: 'dotted' }, itemStyle: { color: t.series[0] } },
+        { name: 'Tahmin (son 4 sa etkinliği)', type: 'line', data: [[now, last?.[1] ?? 0], [endT, (last?.[1] ?? 0) + rate * ((endT - now) / 1000)]], showSymbol: false, lineStyle: { width: 2, type: 'dotted' }, itemStyle: { color: t.series[0] } },
       ],
     }
   }, [m, view, t, now, live])
 
-  const nokOption = useMemo(() => {
-    if (!view) return {}
+  const partsOption = useMemo(() => {
+    if (!m || !view) return {}
+    const ideal = m.batchSize / m.idealRate / 60
+    const rows = view.finished.filter((d) => d.sinceLastSec !== null)
     return {
       ...baseOption(t),
-      grid: { left: 44, right: 14, top: 12, bottom: 24 },
-      tooltip: { ...(baseOption(t).tooltip as object), trigger: 'axis', valueFormatter: (v: number) => `%${(v * 100).toFixed(2)}` },
-      xAxis: categoryAxisStyle(t, view.hourly.map((h) => hhmm(h.t))),
-      yAxis: { ...valueAxisStyle(t), axisLabel: { color: t.fg3, formatter: (v: number) => `%${(v * 100).toFixed(0)}` } },
+      grid: { left: 48, right: 14, top: 12, bottom: 24 },
+      tooltip: {
+        ...(baseOption(t).tooltip as object),
+        trigger: 'axis',
+        axisPointer: { type: 'shadow' },
+        formatter: (p: { dataIndex: number }[]) => {
+          const d = rows[p[0].dataIndex]
+          return `<b>${hhmm(d.t)} bitti</b><br/>${fmtDuration(d.sinceLastSec!)} (ideal ${fmtDuration(ideal * 60)})${d.nok ? `<br/><span style="color:${t.critical}">${d.nok} uygunsuz</span>` : ''}`
+        },
+      },
+      xAxis: categoryAxisStyle(t, rows.map((d) => hhmm(d.t))),
+      yAxis: { ...valueAxisStyle(t), axisLabel: { color: t.fg3, formatter: (v: number) => (v >= 60 ? `${(Math.round((v / 60) * 10) / 10).toString().replace('.', ',')} sa` : `${Math.round(v)} dk`) } },
       series: [
         {
           type: 'bar',
-          data: view.hourly.map((h) => h.nok),
           barMaxWidth: 22,
-          itemStyle: { color: t.series[1], borderRadius: [4, 4, 0, 0] },
-          markLine: { silent: true, symbol: 'none', lineStyle: { color: t.fg3, type: 'dashed' }, label: { color: t.fg3, formatter: 'Sınır %2', position: 'insideEndTop' }, data: [{ yAxis: 0.02 }] },
+          data: rows.map((d) => ({
+            value: d.sinceLastSec! / 60,
+            itemStyle: { color: d.nok ? t.critical : d.sinceLastSec! / 60 > ideal * 1.15 ? t.series[1] : t.series[0], borderRadius: [4, 4, 0, 0] },
+          })),
+          markLine: { silent: true, symbol: 'none', lineStyle: { color: t.fg3, type: 'dashed' }, label: { color: t.fg3, formatter: 'İdeal çevrim', position: 'insideEndTop' }, data: [{ yAxis: ideal }] },
         },
       ],
     }
-  }, [view, t])
+  }, [m, view, t])
 
   const histOption = useMemo(() => {
     if (!view) return {}
@@ -156,14 +165,15 @@ export default function MachineDetail() {
   const durSec = (now - live.sinceT) / 1000
   const k = live.kpiShift
   const kd = live.kpiDay
-  const etaText = live.proj.verdict === 'done' ? 'Hedef tamamlandı' : live.proj.etaSec === null ? 'Hız 0 · tahmin yok' : live.proj.verdict === 'behind' ? `Yetişmez · −${num(Math.round(live.proj.shortfall / 10) * 10)} adet` : `Tahmini bitiş ${new Date(now + live.proj.etaSec * 1000).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' })}`
+  const etaText = live.proj.verdict === 'done' ? 'Hedef tamamlandı' : live.proj.etaSec === null ? 'Hız 0 · tahmin yok' : live.proj.verdict === 'behind' ? `Yetişmez · −${parts(live.proj.shortfall)} parça` : `Tahmini bitiş ${new Date(now + live.proj.etaSec * 1000).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' })}`
 
   const downRows = [...view.down.entries()]
     .sort((a, b) => b[1] - a[1])
     .map(([r, sec]) => ({ label: REASON_BY_ID[r]?.label ?? '?', value: sec, text: fmtDuration(sec) }))
   const slowRows = [...view.slowLoss.entries()]
+    .filter(([, lost]) => lost >= 30)
     .sort((a, b) => b[1] - a[1])
-    .map(([r, lost]) => ({ label: SLOW_REASONS[r]?.label ?? '?', value: lost, text: num(Math.round(lost)) }))
+    .map(([r, lost]) => ({ label: SLOW_REASONS[r]?.label ?? '?', value: lost, text: fmtDuration(lost) }))
 
   return (
     <div className="mx-auto flex max-w-[1500px] flex-col gap-5">
@@ -199,11 +209,11 @@ export default function MachineDetail() {
             ))}
           </div>
         </StatTile>
-        <StatTile label="Anlık hız" value={live.ratePerSec.toFixed(2).replace('.', ',')} unit="ürün/sn" sub={<>İdeal {m.idealRate.toFixed(1).replace('.', ',')} · hız <b className="tnum text-fg">{live.state === 0 ? pct(live.speedPct, 0) : '—'}</b></>} />
+        <StatTile label={m.batchSize > 1 ? "Şu anki şarj" : "Şu anki parça"} value={pct(live.cycle.progress, 0)} unit="tamam" sub={<>{live.cycle.remainingSec !== null && live.state === 0 ? <>kalan ~{fmtDuration(live.cycle.remainingSec)} · </> : null}ideal {hoursLabel(idealCycleHours(m))} · hız <b className="tnum text-fg">{live.state === 0 ? pct(live.speedPct, 0) : '—'}</b></>} />
         <StatTile label="Günlük hedef" value={pct(live.proj.progress, 0)} sub={<>{num(live.proj.produced)} / {num(m.dailyTarget)} · {etaText}</>}>
           <Meter value={live.proj.progress} marker={(now - dayStartOf(now)) / 86400e3} height={5} color={live.proj.verdict === 'behind' ? 'var(--serious)' : 'var(--series-1)'} />
         </StatTile>
-        <StatTile label="NOK oranı · bugün" value={pct(kd.total ? kd.nok / kd.total : 0, 2)} sub={<>{num(kd.nok)} NOK / {num(kd.total)}</>} />
+        <StatTile label="Uygunsuz parça · bugün" value={String(kd.nok)} valueClass={kd.nok > 0 ? 'text-critical-text' : ''} sub={<>{num(kd.total)} parçadan · {kd.nok > 0 ? "MRB'ye bildirildi" : 'uygunsuzluk yok'}</>} />
         <StatTile label="MTBF / MTTR · bugün" value={view.fail.mtbfSec ? fmtDuration(view.fail.mtbfSec) : '—'} sub={<>MTTR {view.fail.mttrSec ? fmtDuration(view.fail.mttrSec) : '—'} · {view.fail.failures} arıza</>} />
       </section>
 
@@ -224,27 +234,27 @@ export default function MachineDetail() {
 
       <section className="grid grid-cols-2 gap-4">
         <Card>
-          <CardHeader title="Üretim hızı" subtitle="Son 8 saat · 5 dakikalık ortalama, duruşlar dahil" />
+          <CardHeader title="İlerleme hızı" subtitle="Son 8 saat · ideal çevrime göre, 5 dakikalık ortalama, duruşlar 0" />
           <div className="px-2 pb-2 pt-1"><EChart option={rateOption} height={240} label="Üretim hızı ve ideal hız çizgi grafiği" /></div>
         </Card>
         <Card>
-          <CardHeader title="Günlük hedefe doğru" subtitle="Kümülatif OK üretim · plan doğrusu ve son 60 dk hızıyla tahmin" />
+          <CardHeader title="Günlük hedefe doğru" subtitle="Kümülatif uygun parça · plan doğrusu ve son 4 saatin etkinliğiyle tahmin" />
           <div className="px-2 pb-2 pt-1"><EChart option={cumOption} height={240} label="Kümülatif üretim, plan ve tahmin" /></div>
         </Card>
       </section>
 
       <section className="grid grid-cols-3 gap-4">
         <Card>
-          <CardHeader title="Saatlik NOK oranı" subtitle="Son 12 saat" />
-          <div className="px-2 pb-2 pt-1"><EChart option={nokOption} height={210} label="Saatlik NOK oranı sütun grafiği" /></div>
+          <CardHeader title="Parça süreleri" subtitle="Son 48 saat · bir önceki parçadan bu yana geçen süre · turuncu: idealin %15 üstü · kırmızı: uygunsuz" />
+          <div className="px-2 pb-2 pt-1"><EChart option={partsOption} height={210} label="Tamamlanan parçaların süreleri" /></div>
         </Card>
         <Card>
           <CardHeader title="Hız dağılımı" subtitle="Çalışırken hangi hızda kaç dakika (son 8 sa)" />
           <div className="px-2 pb-2 pt-1"><EChart option={histOption} height={210} label="Hız dağılımı histogramı" /></div>
         </Card>
         <Card>
-          <CardHeader title="Yavaşlık nedenleri" subtitle="Son 8 saat · tahmini kayıp adet" />
-          <BarList rows={slowRows} unit="adet" empty="Son 8 saatte belirgin yavaşlık yok" />
+          <CardHeader title="Yavaşlık nedenleri" subtitle="Son 8 saat · ideal hıza göre kayıp süre" />
+          <BarList rows={slowRows} empty="Son 8 saatte belirgin yavaşlık yok" />
         </Card>
       </section>
 
@@ -271,9 +281,10 @@ export default function MachineDetail() {
             })}
             <dl className="grid grid-cols-2 gap-x-3 gap-y-1.5 border-t pt-3 text-xs">
               <dt className="text-fg-2">İş emri</dt><dd className="text-right font-medium">{m.orderNo}</dd>
-              <dt className="text-fg-2">Ürün</dt><dd className="text-right font-medium">{m.product}</dd>
-              <dt className="text-fg-2">Günlük hedef</dt><dd className="tnum text-right font-medium">{num(m.dailyTarget)}</dd>
-              <dt className="text-fg-2">İdeal çevrim</dt><dd className="tnum text-right font-medium">{(1 / m.idealRate).toFixed(2).replace('.', ',')} sn/ürün</dd>
+              <dt className="text-fg-2">Parça</dt><dd className="text-right font-medium">{m.product}</dd>
+              <dt className="text-fg-2">P/N · operasyon</dt><dd className="text-right font-medium">{m.partNumber} · {m.operation}</dd>
+              <dt className="text-fg-2">Günlük hedef</dt><dd className="tnum text-right font-medium">{num(m.dailyTarget)} parça</dd>
+              <dt className="text-fg-2">İdeal çevrim</dt><dd className="tnum text-right font-medium">{hoursLabel(idealCycleHours(m))}{m.batchSize > 1 && ` · şarj ${m.batchSize} parça`}</dd>
             </dl>
           </div>
         </Card>

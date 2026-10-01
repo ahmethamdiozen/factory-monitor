@@ -1,16 +1,16 @@
 import { AlertTriangle, ArrowRight, CheckCircle2, ClipboardList, Info, OctagonAlert } from 'lucide-react'
 import { useMemo } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { HourBars } from '@/components/charts/HourBars'
+import { ShiftTimeline, ShiftTimelineLegend } from '@/components/charts/ShiftTimeline'
 import { Avatar } from '@/components/machine/OperatorChip'
 import { StatusBadge } from '@/components/machine/StatusBadge'
 import { Card } from '@/components/ui/card'
 import { Meter } from '@/components/ui/meter'
 import { LINE_BY_ID, MACHINES, foremanFor } from '@/data/registry'
 import { useSnapshot } from '@/data/snapshot'
-import { handover, hourlyBars, interventions, lineShiftKpi, mainLossInHour, shiftProgress, shiftTarget, shiftWindowAt, topLosses } from '@/data/shiftView'
+import { completions, handover, interventions, lineShiftKpi, shiftProgress, shiftTarget, shiftWindowAt, stateTrack, topLosses } from '@/data/shiftView'
 import type { Tone } from '@/data/shiftView'
-import { num, pct } from '@/lib/kpi'
+import { fmtDuration, num, parts, pct } from '@/lib/kpi'
 import { cn } from '@/lib/utils'
 
 /**
@@ -54,20 +54,22 @@ export default function ForemanScreen() {
     const ms = MACHINES.filter((m) => m.lineId === lineId)
     const progress = ms.map((m) => ({ m, p: shiftProgress(m, w, now), live: snap.byId[m.id] }))
     const ok = progress.reduce((a, x) => a + x.p.ok, 0)
+    const doneWork = progress.reduce((a, x) => a + x.p.done, 0)
     const target = ms.reduce((a, m) => a + shiftTarget(m), 0)
     const expected = progress.reduce((a, x) => a + x.p.expected, 0)
     const projected = progress.reduce((a, x) => a + x.p.projected, 0)
-    const bars = hourlyBars(ms.map((m) => m.id), w, now)
+    const finished = completions(ms.map((m) => m.id), w.start, now)
     return {
       ms,
       progress,
       ok,
+      done: doneWork,
       target,
       expected,
       projected,
       kpi: lineShiftKpi(lineId, w, now),
-      bars,
-      rows: bars.filter((b) => !b.future).map((b) => ({ ...b, loss: mainLossInHour(lineId, b.start, Math.min(b.start + 3600e3, now)) })),
+      timeline: ms.map((m) => ({ id: m.id, label: m.code, track: stateTrack(m.id, w.start, now), parts: finished.filter((d) => d.machineId === m.id) })),
+      finished,
       list: interventions(snap, lineId, w),
       losses: topLosses(lineId, w, now),
       hand: handover(lineId, w, snap),
@@ -79,8 +81,8 @@ export default function ForemanScreen() {
     return (
       <div className="grid h-full place-items-center">
         <div className="text-center">
-          <p className="text-fg-2">Hat bulunamadı.</p>
-          <Link to="/foreman" className="mt-2 inline-block text-s1 underline">Hat seç</Link>
+          <p className="text-fg-2">Hücre bulunamadı.</p>
+          <Link to="/foreman" className="mt-2 inline-block text-s1 underline">Hücre seç</Link>
         </div>
       </div>
     )
@@ -116,15 +118,15 @@ export default function ForemanScreen() {
 
         {/* Özet */}
         <section className="grid grid-cols-4 gap-3">
-          <Kpi label="Vardiya hedefi" value={pct(v.target ? v.ok / v.target : 0, 0)} sub={<>{num(v.ok)} / {num(v.target)} · olması gereken {pct(v.target ? v.expected / v.target : 0, 0)}</>} tone={v.ok >= v.expected ? 'good' : 'warn'} />
+          <Kpi label="Vardiya hedefi" value={pct(v.target ? v.done / v.target : 0, 0)} sub={<>{num(v.ok)} parça bitti / {parts(v.target)} · olması gereken {pct(v.target ? v.expected / v.target : 0, 0)}</>} tone={v.done >= v.expected * 0.95 ? 'good' : 'warn'} />
           <Kpi
             label="Vardiya sonu tahmini"
             value={pct(v.target ? v.projected / v.target : 0, 0)}
-            sub={behind ? <span className="font-medium text-warning-text">−{num(Math.round((v.target - v.projected) / 10) * 10)} adet eksik kalır</span> : <span className="font-medium text-good-text">Hedef tutar</span>}
+            sub={behind ? <span className="font-medium text-warning-text">−{parts(v.target - v.projected)} parça eksik kalır</span> : <span className="font-medium text-good-text">Hedef tutar</span>}
             tone={behind ? 'warn' : 'good'}
           />
           <Kpi label="Çalışan makine" value={`${running} / ${v.ms.length}`} sub={v.ms.length - running > 0 ? `${v.ms.length - running} makine duruyor` : 'Hepsi çalışıyor'} tone={running === v.ms.length ? 'good' : 'warn'} />
-          <Kpi label="Hatalı ürün · vardiya" value={pct(nokRate, 1)} sub={<>{num(v.kpi.nok)} adet · {nokRate > 0.02 ? 'yüksek' : 'normal'}</>} tone={nokRate > 0.02 ? 'warn' : 'good'} />
+          <Kpi label="Uygunsuz parça · vardiya" value={String(v.kpi.nok)} sub={v.kpi.nok > 0 ? <span className="font-medium text-critical-text">MRB'ye bildirildi · %{(nokRate * 100).toFixed(1).replace('.', ',')}</span> : 'Uygunsuzluk yok'} tone={v.kpi.nok > 0 ? 'warn' : 'good'} />
         </section>
 
         <section className="grid grid-cols-5 gap-3">
@@ -166,7 +168,7 @@ export default function ForemanScreen() {
 
           {/* Makineler */}
           <Card className="col-span-2">
-            <h2 className="px-4 pt-3.5 text-[13px] font-semibold">Hattın makineleri</h2>
+            <h2 className="px-4 pt-3.5 text-[13px] font-semibold">Hücrenin makineleri</h2>
             <div className="grid grid-cols-2 gap-2 p-3">
               {v.progress.map(({ m, p, live }) => (
                 <Link key={m.id} to={`/makine-ekrani/${m.id}`} className="flex flex-col gap-2 rounded-lg border p-3 hover:bg-wash focus-visible:outline-2 focus-visible:outline-s1">
@@ -199,38 +201,49 @@ export default function ForemanScreen() {
         </section>
 
         <section className="grid grid-cols-5 gap-3">
-          {/* Saat saat */}
+          {/* Vardiya zaman çizgisi + tamamlanan parçalar */}
           <Card className="col-span-3">
-            <h2 className="px-4 pt-3.5 text-[13px] font-semibold">Saat saat üretim · hat</h2>
-            <div className="px-2">
-              <HourBars bars={v.bars} height={170} />
+            <div className="flex items-center justify-between gap-3 px-4 pt-3.5">
+              <h2 className="text-[13px] font-semibold">Vardiya zaman çizgisi · hücre</h2>
+              <ShiftTimelineLegend />
             </div>
-            <table className="w-full text-xs">
+            <div className="px-4 pt-2">
+              <ShiftTimeline rows={v.timeline} from={w.start} to={w.end} now={now} />
+            </div>
+            <table className="mt-2 w-full text-xs">
               <thead className="text-fg-2">
                 <tr className="border-y">
-                  <th className="px-4 py-1.5 text-left font-medium">Saat</th>
-                  <th className="px-2 py-1.5 text-right font-medium">Plan</th>
-                  <th className="px-2 py-1.5 text-right font-medium">Gerçek</th>
-                  <th className="px-2 py-1.5 text-right font-medium">Fark</th>
-                  <th className="px-4 py-1.5 text-left font-medium">En büyük kayıp</th>
+                  <th className="px-4 py-1.5 text-left font-medium">Bitiş</th>
+                  <th className="px-2 py-1.5 text-left font-medium">Makine</th>
+                  <th className="px-2 py-1.5 text-left font-medium">Parça</th>
+                  <th className="px-2 py-1.5 text-right font-medium">Süre</th>
+                  <th className="px-2 py-1.5 text-right font-medium">İdeal</th>
+                  <th className="px-4 py-1.5 text-left font-medium">Sonuç</th>
                 </tr>
               </thead>
               <tbody className="tnum">
-                {v.rows.map((r) => {
-                  const d = r.ok - r.target
+                {v.finished.length === 0 && (
+                  <tr>
+                    <td colSpan={6} className="px-4 py-4 text-center text-fg-2">
+                      Bu vardiyada henüz tamamlanan parça yok
+                    </td>
+                  </tr>
+                )}
+                {[...v.finished].reverse().slice(0, 8).map((d) => {
+                  const mm = MACHINES.find((x) => x.id === d.machineId)!
+                  const ideal = mm.batchSize / mm.idealRate
+                  const slow = d.sinceLastSec !== null && d.sinceLastSec > ideal * 1.15
                   return (
-                    <tr key={r.start} className="border-b last:border-0">
-                      <td className="px-4 py-1.5">
-                        {hhmm(r.start)}
-                        {r.partial && <span className="text-fg-3"> · sürüyor</span>}
+                    <tr key={`${d.machineId}-${d.t}`} className="border-b last:border-0">
+                      <td className="px-4 py-1.5">{hhmm(d.t)}</td>
+                      <td className="px-2 font-medium">{mm.code}</td>
+                      <td className="px-2 text-fg-2">
+                        {mm.product}
+                        {d.ok + d.nok > 1 && ` · ${d.ok + d.nok} parça (şarj)`}
                       </td>
-                      <td className="px-2 text-right text-fg-2">{num(r.target)}</td>
-                      <td className="px-2 text-right font-medium">{num(r.ok)}</td>
-                      <td className={cn('px-2 text-right font-medium', d < 0 ? 'text-warning-text' : 'text-good-text')}>
-                        {d >= 0 ? '+' : '−'}
-                        {num(Math.abs(d))}
-                      </td>
-                      <td className="px-4 text-fg-2">{r.loss}</td>
+                      <td className={cn('px-2 text-right', slow ? 'font-medium text-warning-text' : '')}>{d.sinceLastSec !== null ? fmtDuration(d.sinceLastSec) : '—'}</td>
+                      <td className="px-2 text-right text-fg-2">{fmtDuration(ideal)}</td>
+                      <td className="px-4">{d.nok > 0 ? <span className="font-medium text-critical-text">{d.nok} uygunsuz · MRB</span> : <span className="text-good-text">Uygun</span>}</td>
                     </tr>
                   )
                 })}
@@ -284,7 +297,7 @@ export default function ForemanScreen() {
           <div className="text-sm leading-relaxed">
             <b>Önceki vardiyadan devir</b> <span className="text-fg-2">({v.hand.shift.name}{v.hand.foreman ? ` · ${v.hand.foreman.name}` : ''})</span>
             <span className="text-fg-2"> — </span>
-            Hedefin <b className="tnum">{pct(v.hand.targetPct, 0)}</b>'i üretildi · hatalı ürün <b className="tnum">{pct(v.hand.nokRate, 1)}</b> · {v.hand.failures} arıza
+            Hedefin <b className="tnum">{pct(v.hand.targetPct, 0)}</b>'i üretildi · uygunsuz <b className="tnum">{pct(v.hand.nokRate, 1)}</b> · {v.hand.failures} arıza
             {v.hand.worstFailure && <> (en uzunu: {v.hand.worstFailure})</>}
             {v.hand.stillOpen.length > 0 ? (
               <>

@@ -2,6 +2,17 @@
 
 Fabrikadaki makine metriklerini (SQL Server'da tutulan) anlamlı bilgiye çevirip web üzerinde görselleştiren, **tamamen offline / localhost** çalışan prototip.
 
+Örnek tesis bir **jet motoru parça atölyesidir**: 4 hücre, 12 makine.
+
+| Hücre | Makineler | Parçalar |
+|---|---|---|
+| Hücre 1 · Döner Parçalar | TRN-01/02 dikey torna (VTL), TRN-03 CNC torna, TAS-01 silindirik taşlama | HPT/HPC türbin ve kompresör diskleri, LPT ana şaft |
+| Hücre 2 · Blisk & Muhafaza | FRZ-01…04 5 eksen freze | fan ve kompresör bliskleri, yanma odası ve türbin muhafazaları |
+| Hücre 3 · Isıl İşlem & Kaplama | FRN-01/02 vakum fırını (6 parçalık şarj), KPL-01 plazma sprey | çözeltiye alma, yaşlandırma, termal bariyer kaplama |
+| Hücre 4 · Ölçüm & Kalite | CMM-01 koordinat ölçüm | son ölçüm |
+
+Çevrimler saatler sürer (1–12 sa), günlük hedefler birkaç parçadır. Bu yüzden ekranlar "ürün/sn" yerine **şu anki parçanın ilerlemesini**, **ilerleme hızını** (ideal çevrime göre) ve **parçaların ne zaman bittiğini** gösterir. Uygunsuz parçalar MRB'ye (malzeme inceleme kurulu) gider.
+
 Veri, fabrikadaki gerçek yolu izler:
 
 ```
@@ -78,29 +89,30 @@ Docker kurmak istemeyen herkes için: yukarıdaki **kurulumsuz demo** linki.
 
 | Buton | Yol | Kimin için | İçerik |
 |---|---|---|---|
-| **Makine** | `/makine-ekrani/:id` | Makine başındaki operatör (tablet) | Büyük durum bandı, bu vardiya üretilen / hedef, "geridesin / öndesin", hız ve yavaşlık nedeni + ne yapmalı, son 1 saat hatalı ürün, saat saat üretim, yapılacaklar. Jargon yok. Tam ekran (kiosk) modu var. |
-| **Foreman** | `/foreman/:hatId` | Hattın o vardiyadaki sorumlusu | Öncelikli müdahale listesi (öneriyle), vardiya hedefi ve vardiya sonu tahmini, hattın makineleri, saat saat plan/gerçek/fark/kayıp tablosu, en büyük 3 kayıp, ekip, önceki vardiyadan otomatik devir özeti. |
+| **Makine** | `/makine-ekrani/:id` | Makine başındaki operatör (tablet) | Büyük durum bandı, bu vardiya tamamlanan / hedef parça, "planın ~1 sa gerisindesin", şu anki parçanın ilerlemesi ve tahmini bitişi, yavaşlık nedeni + ne yapmalı, uygunsuz parça ve son ara ölçüm, vardiya zaman çizgisi, yapılacaklar. Jargon yok. Tam ekran (kiosk) modu var. |
+| **Foreman** | `/foreman/:hucreId` | Hücrenin o vardiyadaki sorumlusu | Öncelikli müdahale listesi (öneriyle), vardiya hedefi ve vardiya sonu tahmini, hücrenin makineleri, makine makine vardiya zaman çizgisi ve tamamlanan parçalar tablosu (süre / ideal / sonuç), en büyük 3 kayıp, ekip, önceki vardiyadan otomatik devir özeti. |
 | **Mühendis** | `/` | Mühendis / yönetici | OEE, kayıp şelalesi, duruş Pareto, SPC (x̄–R, Western Electric, Cpk), **öngörücü bakım** (yapay zekâ ile arıza tahmini), vardiya ve personel analizi, olay günlüğü, metrik rehberi. |
 | **SQL Veri** | `/sql` | Teknik ekip / sunum | Veri hattının canlı sağlığı (her halkanın durumu ve gecikmesi), SQL Server'daki ham tablolar, her tablonun nasıl anlamlandırıldığı. |
 
-Header'daki **zil**: öngörücü bakım bildirimleri (bakım ekibi ve hattın foreman'i için), "Okundu / Bakım planlandı / Kapat" durumlarıyla.
+Header'daki **zil**: öngörücü bakım bildirimleri (bakım ekibi ve hücrenin foreman'i için), "Okundu / Bakım planlandı / Kapat" durumlarıyla.
 
 Backend koparsa ekranlar **eldeki son veriyi göstermeye devam eder**, sağ üstte (kiosk modunda sağ altta) "Yeni veri alınamıyor · son veri 17:42:10" uyarısı çıkar. Collector veya simülatör durursa "Veri gecikiyor" uyarısı çıkar.
 
 ## Veri hattı
 
 ### 1. Simülatör (`server/simulator/`) — fabrika tarafı
-12 makineyi gerçek saatle simüle eder, PLC/SCADA'nın yazacağı satırları SQL Server'a yazar. **Yavaşlık nedenini yazmaz**; sadece sinyal üretir (sıcaklık, titreşim, besleme %, takım çevrim sayısı, hammadde lotu, çevrim süresi). Demo için gömülü hikâyeler başlangıç anına göre kurgulanır: MNT-01 hızla yıpranıyor (yapay zekâ ~3 saat sonraki arızayı önceden haber verir), PKT-04'ün 3 saat önceki arızası önceden uyarılmıştı, ENJ-02 takım aşınması (SPC alarmı), ENJ-04 aşırı ısınma, Hat 3 besleme dalgalanması, PKT-02 malzeme beklemesi, MNT-02 planlı bakım, ENJ-03 kalıp değişimi, MNT-04'te B vardiyasında yeni operatör.
+12 makineyi gerçek saatle simüle eder, PLC/SCADA'nın yazacağı satırları SQL Server'a yazar. Makine tipine göre davranır (tezgâh, taşlama, fırın şarjı, kaplama, CMM). **Yavaşlık nedenini yazmaz**; sadece sinyal üretir (sıcaklık, titreşim, ilerleme / besleme %, takım çevrim sayısı, malzeme partisi, çevrim süresi, motor akımı). Demo için gömülü hikâyeler başlangıç anına göre kurgulanır: FRZ-01 iş mili yıpranıyor (yapay zekâ ~3 saat sonraki arızayı önceden haber verir), FRN-02'nin birkaç saat önceki arızası önceden uyarılmıştı, TRN-02 takım aşınması (SPC alarmı), TAS-01 soğutma sıvısı sıcak, FRZ-03 titreşim nedeniyle ilerleme düşürüldü, KPL-01 toz besleme dalgalanması, FRN-01 parça bekliyor, FRZ-02 planlı bakım, TRN-03 program / fikstür değişimi, FRZ-04'te B vardiyasında yeni operatör.
 
 - `npm run sim` kaldığı yerden devam eder (aradaki boşluğu doldurur)
 - `npm run sim:reset` her şeyi silip son 48 saati yeniden üretir (sunumdan hemen önce önerilir)
+- Şema sürümü (`dbo.SchemaInfo`) değişmişse simülatör tabloları kendiliğinden yeniden kurar; collector da bunu görüp SQLite'ı sıfırdan doldurur
 
 ### 2. SQL Server (`server/sql/schema.sql`) — bize verilecek olan
-`Machines`, `Lines`, `DowntimeReasons`, `Employees`, `ShiftDefinitions`, `ShiftAssignments`, `WorkOrders` (referans) ve `MachineEvents` (sadece durum değişince), `ProductionCounters` (10 sn'de bir **kümülatif** sayaç, 06:00'da sıfırlanır), `ProcessValues`, `QualitySamples` (ölçüm). Zamanlar UTC, tablolar sadece ekleme.
+`Machines` (makine tipi, parça numarası, operasyon, şarj büyüklüğü, ideal çevrim), `Lines` (hücreler), `DowntimeReasons`, `Employees`, `ShiftDefinitions`, `ShiftAssignments`, `WorkOrders` (referans) ve `MachineEvents` (sadece durum değişince), `ProductionCounters` (10 sn'de bir **kümülatif** sayaç, 06:00'da sıfırlanır), `ProcessValues`, `QualitySamples` (ölçüm). Zamanlar UTC, tablolar sadece ekleme.
 
 ### 3. Collector (`server/collector/`) — anlamlandırma
 5 sn'de bir sadece yeni satırları (`Id > son okunan`) salt-okur çeker ve `src/pipeline/transform.ts` ile dönüştürür:
-kümülatif sayaç → 10 sn'lik OK/NOK · olaylar → dilim durumu + duruş kayıtları · çevrim süresi → hız % · sinyaller + **kural motoru** (`src/lib/rules.ts`) → yavaşlık nedeni · ölçümler → SPC alt grupları. Sonuç `data/factory.db` (SQLite) dosyasına yazılır. Yeniden başlarsa kaldığı yerden devam eder; SQL Server sıfırlanırsa kendini yeniden kurar.
+kümülatif sayaç → tamamlanan uygun / uygunsuz parçalar · olaylar → dilim durumu + duruş kayıtları · çevrim süresi → ilerleme hızı % · sinyaller + **kural motoru** (`src/lib/rules.ts`) → yavaşlık nedeni · ölçümler → SPC alt grupları. Sonuç `data/factory.db` (SQLite) dosyasına yazılır. Yeniden başlarsa kaldığı yerden devam eder; SQL Server sıfırlanırsa kendini yeniden kurar.
 
 ### 4. API (`server/api/`, port 3001)
 `/api/meta`, `/api/series`, `/api/events`, `/api/spc` (SQLite'tan), `/api/health`, `/api/sql/tables`, `/api/sql/table/:ad` (SQL Server'dan, salt-okur, beyaz listeli). Vite geliştirme sunucusu `/api` isteklerini buraya yönlendirir.
@@ -112,7 +124,7 @@ kümülatif sayaç → 10 sn'lik OK/NOK · olaylar → dilim durumu + duruş kay
 - **Belirtiler:** simülatörde her makinenin gizli bir yıpranma seviyesi vardır. Yıpranma motor akımını (`ProcessValues.MotorCurrentA`), titreşimi, mikro duruş sıklığını ve çevrim süresi düzensizliğini artırır, sonunda arızaya yol açar. Arızaların bir kısmı (sensör/PLC) ani ve belirtisizdir; bunları hiçbir model önceden göremez.
 - **Özellikler:** `src/ml/features.ts` son 1–24 saatin eğilimlerini çıkarır. Eğitimde ve canlıda **aynı kod** çalışır.
 - **Model:** Python'da (scikit-learn, Gradient Boosting) eğitilir, ağaçlar `src/ml/modelData.ts`'e aktarılır ve TypeScript'te çalışır: tam sürümde collector'da (5 dk'da bir → SQLite `risk`, `notification`), web demosunda tarayıcıda. TS tahminlerinin Python'la aynı olduğu testle doğrulanır.
-- **Sonuç (simüle 180 gün, modelin görmediği son 30 günde):** öngörülebilir arızaların ~%69'u ortalama ~16 saat önceden yakalanır; makine başına haftada ~0,4 boş alarm. Değerler `ml:train` çıktısında ve uygulamadaki **Öngörücü Bakım** sayfasındadır.
+- **Sonuç (simüle 180 gün, modelin görmediği son 30 günde):** öngörülebilir arızaların ~%86'sı ortalama ~16 saat önceden yakalanır; makine başına haftada ~0,6 boş alarm. Değerler `ml:train` çıktısında ve uygulamadaki **Öngörücü Bakım** sayfasındadır.
 - **Ne kadar veri gerekir?** Belirleyici olan süre değil, arıza örneği sayısıdır (~50–100). Sayfadaki öğrenme eğrisi bunu gösterir; simülasyonda belirtiler basit olduğu için eğri erken düzleşir, gerçek veride daha yavaş yükselir.
 
 Modeli yeniden eğitmek (isteğe bağlı; eğitilmiş model repoda hazır, uygulama için Python gerekmez):

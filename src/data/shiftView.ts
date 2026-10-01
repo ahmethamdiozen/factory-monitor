@@ -3,7 +3,7 @@ import { MACHINES, REASON_BY_ID, SHIFTS, SLOW_REASONS, foremanFor, operatorFor, 
 import type { MachineLive, Snapshot } from '@/data/snapshot'
 import { source } from '@/data/store'
 import { activeRisk } from '@/data/predictiveView'
-import { failureStats, idxOf, machineKpi, sumKpi } from '@/lib/kpi'
+import { failureStats, idxOf, machineKpi, parts, sumKpi } from '@/lib/kpi'
 import type { Kpi } from '@/lib/kpi'
 import { detectViolations, referenceLimits } from '@/lib/spc'
 import { BUCKET_MS, BUCKET_SEC, STATE } from '@/lib/types'
@@ -35,7 +35,8 @@ export function shiftWindowAt(t: number): ShiftWindow {
 }
 
 export const previousShift = (w: ShiftWindow) => shiftWindowAt(w.start - 1)
-export const shiftTarget = (m: Machine) => Math.round(m.dailyTarget / 3)
+/** Vardiya hedefi (parça). Uzun çevrimli makinelerde kesirli olabilir (ör. 0,7 parça). */
+export const shiftTarget = (m: Machine) => m.dailyTarget / 3
 
 export interface ShiftProgress {
   ok: number
@@ -45,7 +46,9 @@ export interface ShiftProgress {
   expected: number
   /** ok − expected (negatif: geride) */
   diff: number
-  /** Son 60 dk hızıyla vardiya sonu tahmini */
+  /** Yarım kalan parça dahil şu ana kadar yapılan iş (parça cinsinden) */
+  done: number
+  /** Son 4 saatin çalışma etkinliğiyle vardiya sonu tahmini */
   projected: number
   progress: number
   timeProgress: number
@@ -69,89 +72,110 @@ export function shiftProgress(m: Machine, w: ShiftWindow, now: number): ShiftPro
   const { ok, nok } = sumRange(s, i0, i1)
   const target = shiftTarget(m)
   const elapsed = Math.max(0, Math.min(SHIFT_MS, now - w.start))
-  const expected = Math.round((target * elapsed) / SHIFT_MS)
-  const win = Math.min(i1 - i0, (60 * 60) / BUCKET_SEC)
-  const recent = win > 0 ? sumRange(s, i1 - win, i1).ok / (win * BUCKET_SEC) : 0
+  const expected = (target * elapsed) / SHIFT_MS
+  // Uzun çevrimlerde yarım kalan parça da sayılır: bu vardiyada yapılan iş = Σ(çalışma süresi × hız),
+  // parça cinsinden. (Önceki vardiyada başlamış parçanın o vardiyaya ait kısmı buraya yazılmaz.)
+  let work = 0
+  for (let i = Math.max(0, i0); i < Math.min(s.length, i1); i++) if (s.state[i] === STATE.RUNNING) work += s.speed[i] * BUCKET_SEC
+  const done = work * m.idealRate
+  const iEff = Math.max(0, i1 - (4 * 3600) / BUCKET_SEC)
+  let w4 = 0
+  for (let i = iEff; i < i1; i++) if (s.state[i] === STATE.RUNNING) w4 += s.speed[i]
+  const eff = i1 > iEff ? w4 / (i1 - iEff) : 0
   const remainingMs = Math.max(0, w.end - now)
   return {
     ok,
     nok,
     target,
     expected,
-    diff: ok - expected,
-    projected: Math.round(ok + (recent * remainingMs) / 1000),
-    progress: Math.min(1, ok / target),
+    diff: done - expected,
+    done,
+    projected: done + (m.idealRate * eff * remainingMs) / 1000,
+    progress: Math.min(1, done / target),
     timeProgress: elapsed / SHIFT_MS,
     remainingMs,
   }
 }
 
-export interface HourBar {
-  start: number
+/** Tamamlanan parça / şarj */
+export interface PartDone {
+  machineId: string
+  /** tamamlanma anı */
+  t: number
   ok: number
-  target: number
-  /** Saat tamamlanmadıysa kısmi hedef */
-  partial: boolean
-  future: boolean
+  nok: number
+  /** bir önceki tamamlanmadan bu yana geçen süre (sn) */
+  sinceLastSec: number | null
 }
 
-export function hourlyBars(ids: string[], w: ShiftWindow, now: number): HourBar[] {
-  const out: HourBar[] = []
-  const machines = MACHINES.filter((m) => ids.includes(m.id))
-  const hourTarget = machines.reduce((a, m) => a + shiftTarget(m), 0) / 8
-  for (let h = 0; h < 8; h++) {
-    const start = w.start + h * HOUR
-    const end = Math.min(start + HOUR, now)
-    if (start >= now) {
-      out.push({ start, ok: 0, target: Math.round(hourTarget), partial: false, future: true })
-      continue
+export function completions(ids: string[], from: number, to: number): PartDone[] {
+  const out: PartDone[] = []
+  for (const id of ids) {
+    const s = source.machineSeries(id)
+    const i0 = Math.max(0, idxOf(source, from))
+    const i1 = Math.min(s.length, idxOf(source, to))
+    // bir önceki tamamlanmayı bulmak için pencereden geriye bak
+    let prev: number | null = null
+    for (let i = i0 - 1; i >= Math.max(0, i0 - 8640); i--) {
+      if (s.ok[i] + s.nok[i] > 0) {
+        prev = s.startT + (i + 1) * BUCKET_MS
+        break
+      }
     }
-    let ok = 0
-    for (const m of machines) ok += sumRange(source.machineSeries(m.id), idxOf(source, start), idxOf(source, end)).ok
-    const frac = (end - start) / HOUR
-    out.push({ start, ok, target: Math.round(hourTarget * frac), partial: frac < 1, future: false })
+    for (let i = i0; i < i1; i++) {
+      if (s.ok[i] + s.nok[i] === 0) continue
+      const t = s.startT + (i + 1) * BUCKET_MS
+      out.push({ machineId: id, t, ok: s.ok[i], nok: s.nok[i], sinceLastSec: prev === null ? null : (t - prev) / 1000 })
+      prev = t
+    }
+  }
+  return out.sort((a, b) => a.t - b.t)
+}
+
+/** Vardiya boyunca 5 dk'lık dilimlerde baskın durum (zaman çizgisi için) */
+export function stateTrack(machineId: string, from: number, to: number, stepMin = 5): { t: number; state: number }[] {
+  const s = source.machineSeries(machineId)
+  const step = (stepMin * 60) / BUCKET_SEC
+  const out: { t: number; state: number }[] = []
+  for (let a = Math.max(0, idxOf(source, from)); a < Math.min(s.length, idxOf(source, to)); a += step) {
+    const counts = [0, 0, 0, 0]
+    for (let k = a; k < Math.min(a + step, s.length); k++) counts[s.state[k]]++
+    out.push({ t: s.startT + a * BUCKET_MS, state: counts.indexOf(Math.max(...counts)) })
   }
   return out
-}
-
-export function lastHourQuality(machineId: string, now: number): { nok: number; total: number; rate: number } {
-  const s = source.machineSeries(machineId)
-  const { ok, nok } = sumRange(s, idxOf(source, now - HOUR), idxOf(source, now))
-  const total = ok + nok
-  return { nok, total, rate: total ? nok / total : 0 }
 }
 
 // ---------- Sade dil: öneriler ----------
 
 /** Yavaşlık nedeni → operatörün anlayacağı kısa açıklama ve yapılacak iş */
 export const SLOW_ADVICE: Record<number, { what: string; todo: string }> = {
-  1: { what: 'Kalıp / takım aşınıyor', todo: "Foreman'e takım değişimini söyle" },
-  2: { what: 'Yeni hammadde lotu sorunlu olabilir', todo: 'Kaliteye numune ver, lotu kontrol ettir' },
-  3: { what: 'Makine ayarı yavaş kalmış olabilir', todo: 'İş talimatındaki hız ayarını kontrol et' },
-  4: { what: 'Makine fazla ısınmış', todo: 'Soğutma suyunu ve fanı kontrol et' },
-  5: { what: 'Duruştan sonra ısınıyor', todo: 'Birkaç dakikada normale döner, bekle' },
-  6: { what: 'Besleme düzensiz geliyor', todo: 'Besleme bandını ve hazneyi kontrol et' },
+  1: { what: 'Kesici uç aşınıyor', todo: 'Takım ömrünü kontrol et, gerekirse ucu değiştir' },
+  2: { what: 'Yeni malzeme partisi daha sert olabilir', todo: 'Parti sertifikasını kaliteye kontrol ettir' },
+  3: { what: 'Parametreler standarttan farklı olabilir', todo: 'İş talimatındaki kesme parametrelerini kontrol et' },
+  4: { what: 'Soğutma sıvısı / iş mili ısındı', todo: "Soğutma sıvısı seviyesini ve chiller'ı kontrol et" },
+  5: { what: 'Duruş sonrası ısınma programı', todo: 'Isınma programı bitince normale döner, bekle' },
+  6: { what: 'İlerleme düşürüldü (titreşim / besleme)', todo: 'Takım bağlamasını, titreşimi ve beslemeyi kontrol et' },
   7: { what: 'Neden belli değil', todo: "Foreman'e haber ver" },
 }
 
 /** Duruş için "normal" süre (dk). Aşılırsa müdahale gerekir. Arıza her zaman müdahale ister. */
 export const NORMAL_STOP_MIN: Record<string, number> = {
   breakdown: 0,
-  changeover: 20,
-  microstop: 3,
-  material: 10,
-  staffing: 10,
-  quality: 15,
-  planned: 60,
+  changeover: 45,
+  microstop: 5,
+  material: 30,
+  staffing: 15,
+  quality: 40,
+  planned: 120,
 }
 
 export const STOP_ADVICE: Record<string, string> = {
   breakdown: 'Bakım ekibini çağır',
-  changeover: 'Ayar ekibine sor, ne kadar kaldı?',
-  microstop: 'Sıkışmayı temizle',
-  material: 'Malzeme / forklift durumunu sor',
+  changeover: 'Ayar ekibine sor; ilk parça onayı ne zaman?',
+  microstop: 'Talaşı temizle, alarmı kontrol et',
+  material: 'Önceki operasyondan parça ne zaman geliyor?',
   staffing: 'Yedek operatör ayarla',
-  quality: 'Kalite onayını takip et',
+  quality: 'CMM / kalite onayını takip et',
   planned: 'Planlı — bitiş saatini takip et',
 }
 
@@ -162,10 +186,14 @@ export interface TodoItem {
   text: string
 }
 
-function nextQualityCheck(machineId: string): number | null {
-  const pts = source.spc(machineId)
-  if (!pts.length) return null
-  return pts[pts.length - 1].t + 15 * 60 * 1000
+/** Makine tipine göre ara ölçüm aralığı (dk); fırında ölçüm şarj sonunda yapılır */
+const QUALITY_EVERY_MIN: Record<string, number | null> = { cnc: 30, grinder: 20, coating: 30, cmm: 120, furnace: null }
+
+function nextQualityCheck(m: Machine): number | null {
+  const every = QUALITY_EVERY_MIN[m.type]
+  const pts = source.spc(m.id)
+  if (!every || !pts.length) return null
+  return pts[pts.length - 1].t + every * 60 * 1000
 }
 
 function spcAlarm(m: Machine): boolean {
@@ -189,13 +217,13 @@ export function operatorTodos(live: MachineLive, w: ShiftWindow, now: number): T
   const risk = activeRisk(m.id, live.state, live.reasonId)
   if (risk?.level === 'alarm') out.push({ tone: 'serious', text: 'Arıza riski yüksek — bakım ekibine haber verildi; olağandışı ses, koku veya titreşim varsa bildir' })
   else if (risk?.level === 'watch') out.push({ tone: 'info', text: 'Makine sağlığı izleniyor — olağandışı bir şey fark edersen foreman\'e söyle' })
-  const q = lastHourQuality(m.id, now)
-  if (q.total > 50 && q.rate > 0.02) out.push({ tone: 'warning', text: 'Hatalı ürün arttı — ölçü kontrolü yap' })
+  const sp = shiftProgress(m, w, now)
+  if (sp.nok > 0) out.push({ tone: 'serious', text: 'Uygunsuz parça çıktı — parçayı karantinaya ayır, kaliteye bildir (MRB)' })
   if (spcAlarm(m)) out.push({ tone: 'warning', text: `${m.spec.characteristic} kayıyor — kaliteye haber ver` })
-  const next = live.state === STATE.RUNNING ? nextQualityCheck(m.id) : null
+  const next = live.state === STATE.RUNNING ? nextQualityCheck(m) : null
   if (next !== null) {
     const min = Math.round((next - now) / 60000)
-    out.push(min <= 0 ? { tone: 'serious', text: 'Kalite ölçümü zamanı geçti — şimdi ölç' } : { tone: 'info', text: `Sıradaki kalite ölçümü ${min} dk sonra` })
+    out.push(min <= 0 ? { tone: 'serious', text: 'Ara ölçüm zamanı geçti — şimdi ölç' } : { tone: 'info', text: `Sıradaki ara ölçüm ${min} dk sonra` })
   }
   const left = (w.end - now) / 60000
   if (left < 30) out.push({ tone: 'info', text: `Vardiya devrine ${Math.round(left)} dk kaldı — devir notunu hazırla` })
@@ -278,7 +306,7 @@ export function interventions(snap: Snapshot, lineId: string, w: ShiftWindow): I
         tone: 'warning',
         rank: 5,
         title: 'Vardiya hedefinin gerisinde',
-        detail: `Bu hızla vardiya sonunda ${(Math.round((p.target - p.projected) / 10) * 10).toLocaleString('tr-TR')} adet eksik`,
+        detail: `Bu hızla vardiya sonunda ${parts(p.target - p.projected)} parça eksik`,
         action: 'Duruşları kısalt, gerekirse yardım ver',
       })
     }
@@ -315,16 +343,6 @@ export function topLosses(lineId: string, w: ShiftWindow, now: number, n = 3): L
   const speedMin = lineShiftKpi(lineId, w, now).loss.speed / 60
   if (speedMin > 0) agg.set('Yavaş çalışma (hız kaybı)', speedMin)
   return [...agg.entries()].map(([label, minutes]) => ({ label, minutes })).sort((a, b) => b.minutes - a.minutes).slice(0, n)
-}
-
-/** Saat saat tablo satırı için o saatteki en büyük kayıp */
-export function mainLossInHour(lineId: string, start: number, end: number): string {
-  const ms = MACHINES.filter((m) => m.lineId === lineId)
-  const agg = new Map<number, number>()
-  for (const m of ms) for (const [r, sec] of downtimeByReason(source.machineSeries(m.id), idxOf(source, start), idxOf(source, end))) agg.set(r, (agg.get(r) ?? 0) + sec)
-  const top = [...agg.entries()].sort((a, b) => b[1] - a[1])[0]
-  if (!top || top[1] < 120) return '—'
-  return `${REASON_BY_ID[top[0]]?.label} · ${Math.round(top[1] / 60)} dk`
 }
 
 export interface Handover {

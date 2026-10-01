@@ -6,7 +6,7 @@ import { capability, controlLimits, detectViolations, referenceLimits } from '@/
 import { BUCKET_MS, STATE } from '@/lib/types'
 import type { MachineSeries } from '@/lib/types'
 
-function fakeSeries(n: number, fill: (i: number) => { state: number; reason?: number; ok?: number; nok?: number }): MachineSeries {
+function fakeSeries(n: number, fill: (i: number) => { state: number; reason?: number; ok?: number; nok?: number; speed?: number }): MachineSeries {
   const s: MachineSeries = {
     startT: 0,
     length: n,
@@ -23,6 +23,7 @@ function fakeSeries(n: number, fill: (i: number) => { state: number; reason?: nu
     s.downReason[i] = f.reason ?? 0
     s.ok[i] = f.ok ?? 0
     s.nok[i] = f.nok ?? 0
+    s.speed[i] = f.speed ?? 0
   }
   return s
 }
@@ -32,7 +33,7 @@ const M = { ...MACHINES[0], idealRate: 1, dailyTarget: 1000 }
 describe('machineKpi', () => {
   it('OEE = A × P × Q', () => {
     // 100 bucket: 80 çalışıyor (10 sn → 800 sn), 20 arıza. Ideal 1/sn → 10/bucket; gerçek 9/bucket, 1 NOK
-    const s = fakeSeries(100, (i) => (i < 80 ? { state: STATE.RUNNING, ok: 8, nok: 1 } : { state: STATE.STOPPED, reason: 1 }))
+    const s = fakeSeries(100, (i) => (i < 80 ? { state: STATE.RUNNING, ok: 8, nok: 1, speed: 0.9 } : { state: STATE.STOPPED, reason: 1 }))
     const k = machineKpi(s, M, 0, 100)
     expect(k.availability).toBeCloseTo(0.8, 5)
     expect(k.performance).toBeCloseTo(0.9, 5)
@@ -42,7 +43,7 @@ describe('machineKpi', () => {
   })
 
   it('planlı duruş OEE paydasından düşer, TEEP\'e dahil kalır', () => {
-    const s = fakeSeries(100, (i) => (i < 50 ? { state: STATE.RUNNING, ok: 10 } : { state: STATE.MAINTENANCE, reason: 8 }))
+    const s = fakeSeries(100, (i) => (i < 50 ? { state: STATE.RUNNING, ok: 10, speed: 1 } : { state: STATE.MAINTENANCE, reason: 8 }))
     const k = machineKpi(s, M, 0, 100)
     expect(k.availability).toBeCloseTo(1, 5)
     expect(k.oee).toBeCloseTo(1, 5)
@@ -50,7 +51,7 @@ describe('machineKpi', () => {
   })
 
   it('sumKpi zaman ağırlıklı birleştirir', () => {
-    const a = fakeSeries(100, () => ({ state: STATE.RUNNING, ok: 10 }))
+    const a = fakeSeries(100, () => ({ state: STATE.RUNNING, ok: 10, speed: 1 }))
     const b = fakeSeries(100, () => ({ state: STATE.STOPPED, reason: 1 }))
     const k = sumKpi([machineKpi(a, M, 0, 100), machineKpi(b, M, 0, 100)])
     expect(k.availability).toBeCloseTo(0.5, 5)
@@ -65,7 +66,8 @@ describe('projection', () => {
     const dayStart = new Date(now)
     dayStart.setHours(6, 0, 0, 0)
     const n = (6 * 3600) / 10
-    const s = fakeSeries(n, () => ({ state: STATE.RUNNING, ok: 1 }))
+    // ideal 1 parça/sn, gerçek 0,1 parça/sn → hız %10
+    const s = fakeSeries(n, () => ({ state: STATE.RUNNING, ok: 1, speed: 0.1 }))
     s.startT = dayStart.getTime()
     // 6 saatte 2160 OK, hedef 1000 → tamamlanmış
     const p = projection(s, M, now.getTime())
@@ -94,7 +96,7 @@ describe('yerel pipeline (sim → PLC satırları → dönüştürücü)', () =>
     const last = (id: string) => ds.machineSeries(id).state[ds.machineSeries(id).length - 1]
     expect(last('M03')).toBe(STATE.CHANGEOVER)
     expect(last('M06')).toBe(STATE.MAINTENANCE)
-    expect(last('M10')).toBe(STATE.STOPPED)
+    expect(last('M09')).toBe(STATE.STOPPED)
     expect(ds.now()).toBe(t0)
     expect(ds.machineSeries('M01').length * BUCKET_MS).toBe(24 * 3600 * 1000)
   })
@@ -113,9 +115,9 @@ describe('yerel pipeline (sim → PLC satırları → dönüştürücü)', () =>
     const cap = capability(bad, MACHINES[1].spec)!
     expect(vBad.length).toBeGreaterThan(3)
     expect(cap.cpk).toBeLessThan(1.33)
-    const good = ds.spc('M09').slice(-32)
-    const vGood = detectViolations(good, referenceLimits(MACHINES[8].spec))
+    const good = ds.spc('M01').slice(-32)
+    const vGood = detectViolations(good, referenceLimits(MACHINES[0].spec))
     expect(vGood.length).toBeLessThan(vBad.length)
-    expect(controlLimits(ds.spc('M09'))).not.toBeNull()
+    expect(controlLimits(ds.spc('M01'))).not.toBeNull()
   })
 })
