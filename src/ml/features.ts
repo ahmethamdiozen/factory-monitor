@@ -58,8 +58,8 @@ export const FEATURE_LABEL: Record<FeatureName, string> = {
   micro_6h: 'Kısa duruşlar (6 sa)',
   micro_24h: 'Kısa duruşlar (24 sa)',
   speed_cv_1h: 'Çevrim süresi düzensizliği',
-  run_h_since_maint: 'Son bakımdan beri çalışma',
-  h_since_changeover: 'Son program değişiminden beri',
+  run_h_since_maint: 'Son bakımdan beri çalışma (≤48 sa)',
+  h_since_changeover: 'Son program / şarj değişiminden beri (≤48 sa)',
   type_cnc: 'Tip: CNC',
   type_grinder: 'Tip: taşlama',
   type_furnace: 'Tip: fırın',
@@ -87,10 +87,16 @@ const HOUR = 3600 * 1000
 const RUN_WINDOW = 360 // son ~1 saatlik çalışma (10 sn'lik dilim)
 const HOURS_KEPT = 48
 const MICRO_REASON = 10
+const MAINT_REASON = 8
 /** Bakım/onarım sayılan duruşlar: tüm arızalar ve planlı bakım */
 const INTERVENTION_REASONS = new Set([1, 2, 3, 8, 13, 14, 15, 16, 17, 18, 19])
-/** Program / ayar değişimi */
-const CHANGEOVER_REASONS = new Set([4, 5])
+/** Program / ayar değişimi; fırında şarj yükleme */
+const CHANGEOVER_REASONS = new Set([4, 5, 12])
+/**
+ * "Son bakımdan / değişimden beri" sayaçları bu değerde sınırlanır: canlı sistem (ve web demo) sadece
+ * son 48 saati görerek başlar; eğitimde daha uzun değerler görülürse model canlıda farklı veriyle beslenir.
+ */
+const SINCE_CAP_H = 48
 /** Oran olarak yorumlanan kanallar (sıcaklık fark olarak) */
 const RATIO_CH = ['load', 'vib', 'hf', 'cur', 'aux'] as const
 const ALL_CH: Channel[] = ['temp', 'vib', 'hf', 'load', 'cur', 'aux', 'feed']
@@ -156,9 +162,11 @@ export class FeatureTracker {
       // Onarım/bakım: kısa pencerelerdeki eski belirtiler artık bu makinenin durumunu anlatmaz
       this.runSecSinceMaint = 0
       this.run = []
-      this.hours = []
       this.microStarts = []
       this.lastKnown = {}
+      // Arıza onarımı bozulmayı giderir → eğilim geçmişi de sıfırlanır. Planlı bakım bozulmayı her zaman
+      // bulamaz; eğilim korunur (bulduysa eğilim kendiliğinden düşer)
+      if (b.downReason !== MAINT_REASON) this.hours = []
     }
     if (!running && CHANGEOVER_REASONS.has(b.downReason)) this.runSecSinceChangeover = 0
     this.prevState = b.state
@@ -250,8 +258,8 @@ export class FeatureTracker {
       micro6,
       this.microStarts.length,
       speedMean > 0 ? speedSd / speedMean : 0,
-      this.runSecSinceMaint / 3600,
-      Math.min(720, this.runSecSinceChangeover / 3600),
+      Math.min(SINCE_CAP_H, this.runSecSinceMaint / 3600),
+      Math.min(SINCE_CAP_H, this.runSecSinceChangeover / 3600),
       this.type === 'cnc' ? 1 : 0,
       this.type === 'grinder' ? 1 : 0,
       this.type === 'furnace' ? 1 : 0,

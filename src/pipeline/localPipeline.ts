@@ -2,7 +2,7 @@ import { BUCKET_MS } from '@/lib/types'
 import type { DataSource } from '@/data/DataSource'
 import type { MachineSeries, SlowEvent, SpcPoint, StopEvent } from '@/lib/types'
 import { createSeries, putBuckets } from '@/data/series'
-import { LINES, MACHINES, PEOPLE, shiftOf } from '@/sim/factoryDef'
+import { EMPLOYEE_NO, FURNACE_RECIPES, LINES, MACHINES, PEOPLE, shiftOf } from '@/sim/factoryDef'
 import { PredictiveSession } from '@/ml/session'
 import { MachineSim, toolLifeCycles } from '@/sim/machineSim'
 import { PlcRecorder, emptyRows } from '@/sim/plcRecorder'
@@ -13,6 +13,9 @@ import type { Machine } from '@/lib/types'
 import type { NotifyMachine } from '@/ml/notify'
 import { channelBaselines, tagDefsOf } from '@/sim/tags'
 import { SignalAggregator } from '@/data/signals'
+import { SerialRouter } from '@/sim/serialRouter'
+import type { RouterRows } from '@/sim/serialRouter'
+import { TraceStore } from './trace'
 import type { SignalPoint } from '@/data/signals'
 
 /**
@@ -24,6 +27,8 @@ export interface LocalPipelineResult {
   output: TransformOutput
   /** makine → dilim indeksi → simülatörün gerçek yavaşlık nedeni */
   truth: Map<string, Uint8Array>
+  /** MES satırları (seri no yönlendiricisinin yazdıkları) */
+  routed: RouterRows
 }
 
 export function experienceFromDefs(machineId: string, t: number): number | null {
@@ -34,7 +39,14 @@ export function experienceFromDefs(machineId: string, t: number): number | null 
 /** Statik tanımdan dönüştürücü bilgisi (gerçekte collector bunu SQL Server'daki referans tablolarından kurar) */
 export function machineInfoOf(m: Machine, idx: number): MachineInfo {
   const tags = tagDefsOf(m, idx)
-  return { id: m.id, type: m.type, idealCycleMs: 1000 / m.idealRate, toolLife: toolLifeCycles(m), tags, ref: channelBaselines(tags) }
+  const recipe = FURNACE_RECIPES.find((r) => r.machineId === m.id)
+  return { id: m.id, type: m.type, idealCycleMs: 1000 / m.idealRate, toolLife: toolLifeCycles(m), tags, ref: channelBaselines(tags), recipe }
+}
+
+/** t anında makinenin operatörünün sicil numarası (statik tanımdan) */
+export function operatorNoFromDefs(machineId: string, t: number): string | null {
+  const p = PEOPLE.find((x) => x.role === 'operator' && x.machineId === machineId && x.shiftId === shiftOf(t))
+  return p ? EMPLOYEE_NO[p.id] : null
 }
 
 export function notifyMachinesFromDefs(): NotifyMachine[] {
@@ -70,17 +82,29 @@ export function runLocalPipeline(startT: number, endT: number, t0: number): Loca
 
   const predictive = new PredictiveSession(notifyMachinesFromDefs())
   const allBuckets: TransformOutput['buckets'] = []
-  MACHINES.forEach((m, idx) => {
-    const sim = new MachineSim(m, idx, t0)
-    const rec = new PlcRecorder(m)
-    const tr = new MachineTransformer(machineInfoOf(m, idx), { experienceAt: experienceFromDefs })
-    const rows = emptyRows()
-    const tv = new Uint8Array(n)
-    for (let i = 0; i < n; i++) {
-      const s = sim.step(i, startT + i * BUCKET_MS)
-      tv[i] = s.truthSlow
-      rec.record(s, rows)
+  // Makineler aynı zaman sırasıyla ilerler (seri numarası yönlendiricisi bunu gerektirir)
+  const units = MACHINES.map((m, idx) => ({ m, sim: new MachineSim(m, idx, t0), rec: new PlcRecorder(m), rows: emptyRows(), tv: new Uint8Array(n) }))
+  const router = new SerialRouter(MACHINES, t0, { operatorAt: operatorNoFromDefs })
+  const routed: RouterRows = { opEvents: [], ncrs: [], mrb: [] }
+  router.init(startT, routed)
+  for (let i = 0; i < n; i++) {
+    const t = startT + i * BUCKET_MS
+    for (const u of units) {
+      const s = u.sim.step(i, t)
+      u.tv[i] = s.truthSlow
+      u.rec.record(s, u.rows)
+      router.setLot(u.m.id, s.materialLot)
+      router.complete(u.m.id, t + BUCKET_MS, s.produced, s.rejects, routed)
     }
+    router.tick(t + BUCKET_MS, routed)
+  }
+  const trace = new TraceStore()
+  routed.opEvents.forEach((e) => trace.addOpEvent(e))
+  routed.ncrs.forEach((e) => trace.addNcr(e))
+  routed.mrb.forEach((e) => trace.addMrb(e))
+
+  units.forEach(({ m, rows, tv }, idx) => {
+    const tr = new MachineTransformer(machineInfoOf(m, idx), { experienceAt: experienceFromDefs })
     truth.set(m.id, tv)
     const mo = emptyOutput()
     rows.events.forEach((e) => tr.addEvent(e))
@@ -96,6 +120,7 @@ export function runLocalPipeline(startT: number, endT: number, t0: number): Loca
     out.stops.push(...mo.stops)
     out.slows.push(...mo.slows)
     out.spc.push(...mo.spc)
+    out.cycles.push(...mo.cycles)
     const ser = putBuckets(createSeries(startT, n), mo.buckets)
     ser.length = n
     series.set(m.id, ser)
@@ -107,6 +132,7 @@ export function runLocalPipeline(startT: number, endT: number, t0: number): Loca
   let id = 1
   const stops: StopEvent[] = dedupe(out.stops).map((e) => ({ id: id++, machineId: e.machineId, state: e.state as StopEvent['state'], reasonId: e.reasonId, start: e.start, end: e.end }))
   const slows: SlowEvent[] = dedupe(out.slows).map((e) => ({ id: id++, machineId: e.machineId, reasonId: e.reasonId, start: e.start, end: e.end, minSpeed: e.minSpeed }))
+  const cycles = [...out.cycles].sort((a, b) => a.end - b.end)
 
   // Öngörücü bakım: tüm makinelerin dilimleri zaman sırasıyla
   allBuckets.sort((a, b) => a.t - b.t || a.machineId.localeCompare(b.machineId))
@@ -121,10 +147,13 @@ export function runLocalPipeline(startT: number, endT: number, t0: number): Loca
     slowEvents: () => slows,
     spc: (mid) => spc.get(mid) ?? [],
     signals: (mid) => signals.get(mid) ?? [],
+    partOps: () => trace.partOps(),
+    ncrs: () => trace.ncrs(),
+    furnaceCycles: () => cycles,
     riskSeries: (mid) => predictive.riskSeries(mid),
     notifications: () => predictive.notifications(),
     setNotificationStatus: (id, st) => predictive.setStatus(id, st, startT + n * BUCKET_MS),
     subscribe: () => () => {},
   }
-  return { source, output: out, truth }
+  return { source, output: out, truth, routed }
 }

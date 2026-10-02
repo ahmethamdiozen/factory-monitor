@@ -1,4 +1,4 @@
-import { DAY_START_HOUR, DOWNTIME_REASONS, EMPLOYEE_NO, LINES, MACHINES, PEOPLE, SHIFTS } from '@/sim/factoryDef'
+import { DAY_START_HOUR, DOWNTIME_REASONS, EMPLOYEE_NO, FURNACE_RECIPES, LINES, MACHINES, PEOPLE, SHIFTS } from '@/sim/factoryDef'
 import { toolLifeCycles } from '@/sim/machineSim'
 import { TAGS, tagDefsOf } from '@/sim/tags'
 import { sql } from '../shared/mssql'
@@ -46,6 +46,10 @@ export async function seedReference(pool: ConnectionPool, now: number): Promise<
       await q().input('wo', m.orderNo).input('m', m.id).input('p', m.product).input('t', m.dailyTarget * 5)
         .query("INSERT dbo.WorkOrders VALUES (@wo, @m, @p, @t, 'Released')")
     }
+    for (const r of FURNACE_RECIPES) {
+      await q().input('m', r.machineId).input('op', r.operation).input('n', r.name).input('sp', r.setpointC).input('h', r.holdMin).input('tol', r.toleranceC).input('c', r.furnaceClass)
+        .query('INSERT dbo.FurnaceRecipes VALUES (@m, @op, @n, @sp, @h, @tol, @c)')
+    }
     for (const r of DOWNTIME_REASONS.filter((r) => r.id > 0)) {
       await q().input('c', r.id).input('d', r.label).input('cat', r.category).input('p', sql.Bit, r.planned)
         .query('INSERT dbo.DowntimeReasons VALUES (@c, @d, @cat, @p)')
@@ -89,10 +93,11 @@ export async function ensureAssignments(pool: ConnectionPool, from: number, to: 
 }
 
 /** Şema sürümü: tablo yapısı değişince artırılır → simülatör tabloları düşürüp yeniden kurar */
-export const SCHEMA_VERSION = 3
+export const SCHEMA_VERSION = 4
 
 const ALL_TABLES = [
   'ShiftAssignments', 'WorkOrders', 'MachineEvents', 'ProductionCounters', 'ProcessValues', 'ProcessTags', 'MachineTags',
+  'OperationEvents', 'Nonconformances', 'MrbDecisions', 'FurnaceRecipes',
   'QualitySamples', 'PartOperations', 'Employees', 'Machines', 'Lines', 'DowntimeReasons', 'ShiftDefinitions', 'SchemaInfo',
 ]
 
@@ -119,6 +124,10 @@ export async function wipe(pool: ConnectionPool): Promise<void> {
     IF OBJECT_ID('dbo.ProcessValues') IS NOT NULL TRUNCATE TABLE dbo.ProcessValues;
     IF OBJECT_ID('dbo.ProcessTags') IS NOT NULL TRUNCATE TABLE dbo.ProcessTags;
     IF OBJECT_ID('dbo.MachineTags') IS NOT NULL DELETE dbo.MachineTags;
+    IF OBJECT_ID('dbo.FurnaceRecipes') IS NOT NULL DELETE dbo.FurnaceRecipes;
+    IF OBJECT_ID('dbo.OperationEvents') IS NOT NULL TRUNCATE TABLE dbo.OperationEvents;
+    IF OBJECT_ID('dbo.Nonconformances') IS NOT NULL TRUNCATE TABLE dbo.Nonconformances;
+    IF OBJECT_ID('dbo.MrbDecisions') IS NOT NULL TRUNCATE TABLE dbo.MrbDecisions;
     IF OBJECT_ID('dbo.QualitySamples') IS NOT NULL TRUNCATE TABLE dbo.QualitySamples;
     IF OBJECT_ID('dbo.ShiftAssignments') IS NOT NULL TRUNCATE TABLE dbo.ShiftAssignments;
     IF OBJECT_ID('dbo.WorkOrders') IS NOT NULL DELETE dbo.WorkOrders;

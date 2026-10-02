@@ -1,4 +1,4 @@
-import { BookOpen, FlaskConical, HeartPulse, LayoutDashboard, ListChecks, ShieldCheck, TrendingDown, Users } from 'lucide-react'
+import { BookOpen, FlaskConical, HeartPulse, LayoutDashboard, ListChecks, ShieldCheck, TrendingDown, Users, ScanBarcode } from 'lucide-react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { IS_DEMO } from '@/data/mode'
 import { cn } from '@/lib/utils'
@@ -8,6 +8,7 @@ const NAV = [
   { to: '/kayip', label: 'Kayıp & Duruş', icon: TrendingDown },
   { to: '/kalite', label: 'Kalite & SPC', icon: ShieldCheck },
   { to: '/ongorucu-bakim', label: 'Öngörücü Bakım', icon: HeartPulse },
+  { to: '/izlenebilirlik', label: 'İzlenebilirlik', icon: ScanBarcode },
   { to: '/personel', label: 'Vardiya & Personel', icon: Users },
   { to: '/olaylar', label: 'Olay Günlüğü', icon: ListChecks },
   { to: '/metrikler', label: 'Metrik Rehberi', icon: BookOpen },

@@ -5,6 +5,7 @@ import { ShiftTimeline, ShiftTimelineLegend } from '@/components/charts/ShiftTim
 import { Avatar } from '@/components/machine/OperatorChip'
 import { MACHINE_BY_ID, REASON_BY_ID } from '@/data/registry'
 import { HORIZON_TEXT, LEVEL_STYLE, activeRisk } from '@/data/predictiveView'
+import { currentLabel } from '@/data/traceView'
 import { useSnapshot } from '@/data/snapshot'
 import { SLOW_ADVICE, completions, operatorTodos, shiftProgress, shiftWindowAt, stateTrack } from '@/data/shiftView'
 import { source } from '@/data/store'
@@ -108,7 +109,14 @@ export default function OperatorScreen() {
           </div>
           <div className="mt-0.5 flex items-center gap-3 text-base text-fg-2">
             <span>
-              {m.product} · İş emri {m.orderNo}
+              {m.product}
+              {currentLabel(m.id) && (
+                <>
+                  {' '}
+                  · <b className="tnum text-fg">{currentLabel(m.id)}</b>
+                </>
+              )}{' '}
+              · İş emri {m.orderNo}
             </span>
             {health && (
               <span className={cn('inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-sm font-semibold', LEVEL_STYLE[health.level].bg, LEVEL_STYLE[health.level].text)} title={`Öngörücü bakım modeli: önümüzdeki ${HORIZON_TEXT} içinde arıza riski`}>

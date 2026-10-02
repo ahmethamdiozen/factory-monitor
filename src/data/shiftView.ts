@@ -3,6 +3,7 @@ import { MACHINES, REASON_BY_ID, SHIFTS, SLOW_REASONS, foremanFor, operatorFor, 
 import type { MachineLive, Snapshot } from '@/data/snapshot'
 import { source } from '@/data/store'
 import { activeRisk, sourceLabel } from '@/data/predictiveView'
+import { lastCycle } from '@/data/traceView'
 import { failureStats, idxOf, machineKpi, parts, sumKpi } from '@/lib/kpi'
 import type { Kpi } from '@/lib/kpi'
 import { detectViolations, referenceLimits } from '@/lib/spc'
@@ -203,6 +204,16 @@ function spcAlarm(m: Machine): boolean {
   return v.some((x) => x.index >= pts.length - 3)
 }
 
+/** Son 12 saatte biten fırın şarjı reçete dışıysa kısa açıklaması */
+function badCycle(machineId: string, now: number): string | null {
+  const c = lastCycle(machineId)
+  if (!c || c.ok || now - c.end > 12 * 3600e3) return null
+  const dev = Math.abs(c.minDev) > Math.abs(c.maxDev) ? c.minDev : c.maxDev
+  return c.holdMin < c.requiredHoldMin
+    ? `tutma ${Math.round(c.holdMin)} dk, gerekli ${c.requiredHoldMin} dk`
+    : `sıcaklık set değerinin ${Math.abs(dev).toFixed(1).replace('.', ',')} °C ${dev < 0 ? 'altına' : 'üstüne'} çıktı (tolerans ±${c.toleranceC} °C)`
+}
+
 export function operatorTodos(live: MachineLive, w: ShiftWindow, now: number): TodoItem[] {
   const out: TodoItem[] = []
   const m = live.machine
@@ -214,6 +225,8 @@ export function operatorTodos(live: MachineLive, w: ShiftWindow, now: number): T
     const a = SLOW_ADVICE[live.slowReasonId] ?? SLOW_ADVICE[7]
     out.push({ tone: 'warning', text: `${a.todo}` })
   }
+  const bad = badCycle(m.id, now)
+  if (bad) out.push({ tone: 'serious', text: `Son şarj reçete dışı (${bad}) — parçaları karantinaya ayır, kaliteye bildir (MRB)` })
   const risk = activeRisk(m.id, live.state, live.reasonId)
   if (risk?.level === 'alarm')
     out.push({
@@ -254,6 +267,17 @@ export function interventions(snap: Snapshot, lineId: string, w: ShiftWindow): I
   for (const l of snap.machines.filter((x) => x.machine.lineId === lineId)) {
     const m = l.machine
     const stopMin = (now - l.sinceT) / 60000
+    const bad = badCycle(m.id, snap.now)
+    if (bad)
+      out.push({
+        machineId: m.id,
+        code: m.code,
+        tone: 'serious',
+        rank: 0.4,
+        title: 'SON ŞARJ REÇETE DIŞI (AMS 2750)',
+        detail: bad,
+        action: 'Şarjdaki parçaları karantinaya al, kaliteye ve MRB\'ye bildir',
+      })
     const risk = activeRisk(m.id, l.state, l.reasonId)
     if (risk && risk.level !== 'good') {
       const alarm = risk.level === 'alarm'

@@ -7,7 +7,7 @@ import { env } from './env'
  * Yerel deponun yapı sürümü. Depo SQL Server'dan türetilmiş bir ön bellektir: yapı değişince
  * tablolar düşürülür ve collector her şeyi SQL Server'dan yeniden okur.
  */
-const STORE_VERSION = 3
+const STORE_VERSION = 4
 
 /** Collector'ın yerel deposu. Collector yazar, API okur (WAL modu ile eşzamanlı). */
 export function openSqlite(): DatabaseSync {
@@ -20,6 +20,7 @@ export function openSqlite(): DatabaseSync {
     db.exec(`
       DROP TABLE IF EXISTS kv; DROP TABLE IF EXISTS bucket; DROP TABLE IF EXISTS stop_event; DROP TABLE IF EXISTS slow_event;
       DROP TABLE IF EXISTS spc_subgroup; DROP TABLE IF EXISTS risk; DROP TABLE IF EXISTS notification; DROP TABLE IF EXISTS sync_state;
+      DROP TABLE IF EXISTS part_op; DROP TABLE IF EXISTS ncr; DROP TABLE IF EXISTS furnace_cycle;
       PRAGMA user_version = ${STORE_VERSION};
     `)
   }
@@ -110,6 +111,55 @@ export function openSqlite(): DatabaseSync {
       status      TEXT    NOT NULL DEFAULT 'new',
       status_at   INTEGER,
       failure_at  INTEGER
+    );
+
+    -- İzlenebilirlik: MES başlangıç/bitiş kayıtlarından birleştirilmiş operasyonlar
+    CREATE TABLE IF NOT EXISTS part_op (
+      serial      TEXT    NOT NULL,
+      machine_id  TEXT    NOT NULL,
+      start       INTEGER NOT NULL,
+      part_number TEXT    NOT NULL,
+      op          TEXT    NOT NULL,
+      operator_id TEXT,
+      end         INTEGER,
+      result      TEXT,
+      heat_no     TEXT,
+      batch_no    TEXT,
+      updated_at  INTEGER NOT NULL,
+      PRIMARY KEY (serial, machine_id, start)
+    );
+    CREATE INDEX IF NOT EXISTS part_op_upd ON part_op (updated_at);
+    CREATE INDEX IF NOT EXISTS part_op_open ON part_op (serial, machine_id, end);
+
+    -- Uygunsuzluk raporları + MRB kararı
+    CREATE TABLE IF NOT EXISTS ncr (
+      ncr_no         TEXT PRIMARY KEY,
+      serial         TEXT    NOT NULL,
+      part_number    TEXT    NOT NULL,
+      machine_id     TEXT    NOT NULL,
+      op             TEXT    NOT NULL,
+      t              INTEGER NOT NULL,
+      defect_type    TEXT    NOT NULL,
+      disposition    TEXT,
+      disposition_at INTEGER,
+      updated_at     INTEGER NOT NULL
+    );
+
+    -- Fırın çevrimleri: reçete uyumu (AMS 2750)
+    CREATE TABLE IF NOT EXISTS furnace_cycle (
+      machine_id        TEXT    NOT NULL,
+      start             INTEGER NOT NULL,
+      end               INTEGER NOT NULL,
+      hold_min          REAL    NOT NULL,
+      min_dev           REAL    NOT NULL,
+      max_dev           REAL    NOT NULL,
+      setpoint_c        REAL    NOT NULL,
+      required_hold_min REAL    NOT NULL,
+      tolerance_c       REAL    NOT NULL,
+      furnace_class     INTEGER NOT NULL,
+      ok                INTEGER NOT NULL,
+      updated_at        INTEGER NOT NULL,
+      PRIMARY KEY (machine_id, start)
     );
 
     -- SQL Server'daki her tablo için en son okunan Id

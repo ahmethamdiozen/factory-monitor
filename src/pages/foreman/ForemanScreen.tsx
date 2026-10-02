@@ -12,6 +12,8 @@ import { completions, handover, interventions, lineShiftKpi, shiftProgress, shif
 import type { Tone } from '@/data/shiftView'
 import { fmtDuration, num, parts, pct } from '@/lib/kpi'
 import { cn } from '@/lib/utils'
+import { serialsDoneAt } from '@/data/traceView'
+import { BUCKET_MS } from '@/lib/types'
 
 /**
  * FOREMAN EKRANI — bir hattın şu anki vardiyası. Soru: "Şu an neye müdahale etmeliyim
@@ -40,6 +42,13 @@ function Kpi({ label, value, sub, tone }: { label: string; value: React.ReactNod
       {sub && <div className="mt-1.5 text-xs text-fg-2">{sub}</div>}
     </Card>
   )
+}
+
+/** Biten parçanın seri numarası / fırın şarj numarası (tamamlanma dilimi t → MES bitiş kaydı t + 10 sn) */
+function doneLabel(machineId: string, t: number): string {
+  const ops = serialsDoneAt(machineId, t + BUCKET_MS)
+  if (!ops.length) return ''
+  return ops[0].batchNo ? `Şarj ${ops[0].batchNo}` : `S/N ${ops.map((o) => o.serial).join(', ')}`
 }
 
 export default function ForemanScreen() {
@@ -240,6 +249,7 @@ export default function ForemanScreen() {
                       <td className="px-2 text-fg-2">
                         {mm.product}
                         {d.ok + d.nok > 1 && ` · ${d.ok + d.nok} parça (şarj)`}
+                        <div className="tnum text-[11px] text-fg-3">{doneLabel(d.machineId, d.t)}</div>
                       </td>
                       <td className={cn('px-2 text-right', slow ? 'font-medium text-warning-text' : '')}>{d.sinceLastSec !== null ? fmtDuration(d.sinceLastSec) : '—'}</td>
                       <td className="px-2 text-right text-fg-2">{fmtDuration(ideal)}</td>

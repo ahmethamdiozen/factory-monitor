@@ -8,7 +8,7 @@ Fabrikadaki makine metriklerini (SQL Server'da tutulan) anlamlı bilgiye çeviri
 |---|---|---|
 | Hücre 1 · Döner Parçalar | TRN-01/02 dikey torna (VTL), TRN-03 CNC torna, TAS-01 silindirik taşlama | HPT/HPC türbin ve kompresör diskleri, LPT ana şaft |
 | Hücre 2 · Blisk & Muhafaza | FRZ-01…04 5 eksen freze | fan ve kompresör bliskleri, yanma odası ve türbin muhafazaları |
-| Hücre 3 · Isıl İşlem & Kaplama | FRN-01/02 vakum fırını (6 parçalık şarj), KPL-01 plazma sprey | çözeltiye alma, yaşlandırma, termal bariyer kaplama |
+| Hücre 3 · Isıl İşlem & Kaplama | FRN-01/02 vakum fırını (12 parçalık şarj), KPL-01 plazma sprey | çözeltiye alma, yaşlandırma, termal bariyer kaplama |
 | Hücre 4 · Ölçüm & Kalite | CMM-01 koordinat ölçüm | son ölçüm |
 
 Çevrimler saatler sürer (1–12 sa), günlük hedefler birkaç parçadır. Bu yüzden ekranlar "ürün/sn" yerine **şu anki parçanın ilerlemesini**, **ilerleme hızını** (ideal çevrime göre) ve **parçaların ne zaman bittiğini** gösterir. Uygunsuz parçalar MRB'ye (malzeme inceleme kurulu) gider.
@@ -91,24 +91,31 @@ Docker kurmak istemeyen herkes için: yukarıdaki **kurulumsuz demo** linki.
 |---|---|---|---|
 | **Makine** | `/makine-ekrani/:id` | Makine başındaki operatör (tablet) | Büyük durum bandı, bu vardiya tamamlanan / hedef parça, "planın ~1 sa gerisindesin", şu anki parçanın ilerlemesi ve tahmini bitişi, yavaşlık nedeni + ne yapmalı, uygunsuz parça ve son ara ölçüm, vardiya zaman çizgisi, yapılacaklar. Jargon yok. Tam ekran (kiosk) modu var. |
 | **Foreman** | `/foreman/:hucreId` | Hücrenin o vardiyadaki sorumlusu | Öncelikli müdahale listesi (öneriyle), vardiya hedefi ve vardiya sonu tahmini, hücrenin makineleri, makine makine vardiya zaman çizgisi ve tamamlanan parçalar tablosu (süre / ideal / sonuç), en büyük 3 kayıp, ekip, önceki vardiyadan otomatik devir özeti. |
-| **Mühendis** | `/` | Mühendis / yönetici | OEE, kayıp şelalesi, duruş Pareto, SPC (x̄–R, Western Electric, Cpk), **öngörücü bakım** (yapay zekâ ile arıza tahmini), vardiya ve personel analizi, olay günlüğü, metrik rehberi. |
+| **Mühendis** | `/` | Mühendis / yönetici | OEE, kayıp şelalesi, duruş Pareto, SPC (x̄–R, Western Electric, Cpk), uygunsuzluk raporları ve MRB kararları, **öngörücü bakım** (yapay zekâ ile arıza tahmini), **izlenebilirlik** (seri no geçmişi, fırın reçete uyumu), vardiya ve personel analizi, olay günlüğü, metrik rehberi. |
 | **SQL Veri** | `/sql` | Teknik ekip / sunum | Veri hattının canlı sağlığı (her halkanın durumu ve gecikmesi), SQL Server'daki ham tablolar, her tablonun nasıl anlamlandırıldığı. |
 
 Header'daki **zil**: öngörücü bakım bildirimleri (bakım ekibi ve hücrenin foreman'i için), "Okundu / Bakım planlandı / Kapat" durumlarıyla.
 
 Backend koparsa ekranlar **eldeki son veriyi göstermeye devam eder**, sağ üstte (kiosk modunda sağ altta) "Yeni veri alınamıyor · son veri 17:42:10" uyarısı çıkar. Collector veya simülatör durursa "Veri gecikiyor" uyarısı çıkar.
 
+## Havacılık: izlenebilirlik, reçete uyumu, MRB
+
+- **Seri numaralı izlenebilirlik (AS9100):** her parçanın bir seri numarası ve rotası vardır (ör. HPT türbin diski: TRN-01 Op 10 → FRN-01 Op 50 → FRN-02 Op 60 → CMM-01 Op 90). MES her operasyonun başlangıç ve bitişini `dbo.OperationEvents`'e yazar (operatör, ısıl no, fırın şarj no, sonuç). **İzlenebilirlik** sayfasında seri no ile arama, rota, operasyon geçmişi, parçanın şu an nerede olduğu ve kuyruklar (WIP) görünür; makine kartı ve operatör ekranı şu anki seri numarasını gösterir.
+- **Fırın reçete uyumu (AMS 2750):** `dbo.FurnaceRecipes` set değeri, gerekli tutma süresi ve toleransı (fırın sınıfı 2, ±6 °C) tutar. Collector her şarjda tutma süresini ve set değerinden sapmayı fırın sıcaklık etiketinden çıkarır ve reçeteyle karşılaştırır. Reçete dışı şarj foreman ve operatöre "parçaları karantinaya al, MRB'ye bildir" olarak düşer.
+- **Uygunsuzluk ve MRB:** uygunsuz parça için `dbo.Nonconformances`'a NCR açılır; MRB birkaç saat içinde `dbo.MrbDecisions`'a karar yazar (olduğu gibi kullan → rotaya devam, yeniden işle → aynı operasyona geri, hurda). Kalite sayfasında NCR listesi, kararlar ve hücre × vardiya uygunsuzluk sayıları vardır.
+- Demo hikâyesi: FRN-01'in ısıtıcı elemanı zayıflıyor → son şarjlar set değerinin ~6,5 °C altında kalıp **reçete dışı**; öngörücü bakım aynı fırın için "olası kaynak: ısıtıcı eleman" uyarısı veriyor.
+
 ## Veri hattı
 
 ### 1. Simülatör (`server/simulator/`) — fabrika tarafı
-12 makineyi gerçek saatle simüle eder, PLC/SCADA'nın yazacağı satırları SQL Server'a yazar. Makine tipine göre davranır (tezgâh, taşlama, fırın şarjı, kaplama, CMM). **Yavaşlık nedenini yazmaz**; sadece sinyal üretir (makine tipine göre sensör etiketleri, takım çevrim sayısı, malzeme partisi, çevrim süresi). Demo için gömülü hikâyeler başlangıç anına göre kurgulanır: FRZ-01'in iş mili rulmanı ~4 gündür bozuluyor (yapay zekâ ~3 saat sonraki arızayı ve kaynağını önceden haber verir), FRN-02'nin ~3 saat önceki vakum pompası arızası önceden uyarılmıştı, TRN-02 takım aşınması (SPC alarmı), TAS-01 soğutma sıvısı sıcak, FRZ-03 titreşim nedeniyle ilerleme düşürüldü, KPL-01 toz besleme dalgalanması, FRN-01 parça bekliyor, FRZ-02 planlı bakım, TRN-03 program / fikstür değişimi, FRZ-04'te B vardiyasında yeni operatör.
+12 makineyi gerçek saatle simüle eder, PLC/SCADA'nın yazacağı satırları SQL Server'a yazar. Makine tipine göre davranır (tezgâh, taşlama, fırın şarjı, kaplama, CMM). **Yavaşlık nedenini yazmaz**; sadece sinyal üretir (makine tipine göre sensör etiketleri, takım çevrim sayısı, malzeme partisi, çevrim süresi). Demo için gömülü hikâyeler başlangıç anına göre kurgulanır: FRZ-01'in iş mili rulmanı ~4 gündür bozuluyor (yapay zekâ ~3 saat sonraki arızayı ve kaynağını önceden haber verir), FRN-02'nin ~3 saat önceki vakum pompası arızası önceden uyarılmıştı, TRN-02 takım aşınması (SPC alarmı), TAS-01 soğutma sıvısı sıcak, FRZ-03 titreşim nedeniyle ilerleme düşürüldü, KPL-01 toz besleme dalgalanması, FRN-01'in ısıtıcı elemanı zayıflıyor (son şarjlar reçete dışı) ve şu an parça bekliyor, FRZ-02 planlı bakım, TRN-03 program / fikstür değişimi, FRZ-04'te B vardiyasında yeni operatör.
 
 - `npm run sim` kaldığı yerden devam eder (aradaki boşluğu doldurur)
 - `npm run sim:reset` her şeyi silip son 48 saati yeniden üretir (sunumdan hemen önce önerilir)
 - Şema sürümü (`dbo.SchemaInfo`) değişmişse simülatör tabloları kendiliğinden yeniden kurar; collector da bunu görüp SQLite'ı sıfırdan doldurur
 
 ### 2. SQL Server (`server/sql/schema.sql`) — bize verilecek olan
-`Machines` (makine tipi, parça numarası, operasyon, şarj büyüklüğü, ideal çevrim), `Lines` (hücreler), `DowntimeReasons`, `Employees`, `ShiftDefinitions`, `ShiftAssignments`, `WorkOrders` (referans) ve `MachineEvents` (sadece durum değişince), `ProductionCounters` (10 sn'de bir **kümülatif** sayaç, 06:00'da sıfırlanır), `ProcessValues` (çevrim süresi, takım sayacı, malzeme partisi), `ProcessTags` (historian: sensör etiketleri) ve `MachineTags` (etiket sözlüğü + devreye alma referansı), `QualitySamples` (ölçüm). Zamanlar UTC, tablolar sadece ekleme.
+`Machines` (makine tipi, parça numarası, operasyon, şarj büyüklüğü, ideal çevrim), `Lines` (hücreler), `DowntimeReasons`, `Employees`, `ShiftDefinitions`, `ShiftAssignments`, `WorkOrders` (referans) ve `MachineEvents` (sadece durum değişince), `ProductionCounters` (10 sn'de bir **kümülatif** sayaç, 06:00'da sıfırlanır), `ProcessValues` (çevrim süresi, takım sayacı, malzeme partisi), `ProcessTags` (historian: sensör etiketleri) ve `MachineTags` (etiket sözlüğü + devreye alma referansı), `QualitySamples` (ölçüm); MES: `OperationEvents`, `Nonconformances`, `MrbDecisions`, `FurnaceRecipes`. Zamanlar UTC, tablolar sadece ekleme.
 
 ### 3. Collector (`server/collector/`) — anlamlandırma
 5 sn'de bir sadece yeni satırları (`Id > son okunan`) salt-okur çeker ve `src/pipeline/transform.ts` ile dönüştürür:
@@ -126,8 +133,8 @@ kümülatif sayaç → tamamlanan uygun / uygunsuz parçalar · historian etiket
 - **Özellikler:** `src/ml/features.ts` her kanalın referansa oranını ve 24 saatlik eğilimini, kısa duruşları, çevrim düzensizliğini ve makine tipini çıkarır; eksik ölçümler atlanır. Eğitimde ve canlıda **aynı kod** çalışır.
 - **Olası kaynak:** riski artıran sinyaller hangi arıza türünün iziyle örtüşüyorsa o tür ve bakım önerisi bildirimde gösterilir (`src/ml/predict.ts`, `src/lib/failureModes.ts`).
 - **Model:** Python'da (scikit-learn, Gradient Boosting) eğitilir, ağaçlar `src/ml/modelData.ts`'e aktarılır ve TypeScript'te çalışır: tam sürümde collector'da (5 dk'da bir → SQLite `risk`, `notification`), web demosunda tarayıcıda. TS tahminlerinin Python'la aynı olduğu testle doğrulanır.
-- **Sonuç (simüle 365 gün, modelin görmediği son 90 günde):** öngörülebilir arızaların ~%77'si ortalama ~2 gün önceden yakalanır; makine başına haftada ~0,5 boş alarm (alarmların ~yarısı gerçek arızaya denk gelir); olası kaynak yakalanan arızaların ~%83'ünde doğru. Değerler `ml:train` çıktısında ve uygulamadaki **Öngörücü Bakım** sayfasındadır (arıza türüne göre tablo dahil). Bunlar simülasyon sonuçlarıdır; gerçek veride model aynı yöntemle yeniden eğitilir.
-- **Ne kadar veri gerekir?** Belirleyici olan süre değil, arıza örneği sayısıdır. Sayfadaki öğrenme eğrisi: 1 aylık veriyle ~%42, ~90 arıza örneğiyle ~%73'e çıkar, sonra yavaşlar.
+- **Sonuç (simüle 365 gün, modelin görmediği son 90 günde):** öngörülebilir arızaların ~%82'si ortalama ~2 gün önceden yakalanır; makine başına haftada ~0,4 boş alarm (alarmların ~%58'i gerçek arızaya denk gelir); olası kaynak yakalanan arızaların ~%84'ünde doğru. Değerler `ml:train` çıktısında ve uygulamadaki **Öngörücü Bakım** sayfasındadır (arıza türüne göre tablo dahil). Bunlar simülasyon sonuçlarıdır; gerçek veride model aynı yöntemle yeniden eğitilir.
+- **Ne kadar veri gerekir?** Belirleyici olan süre değil, arıza örneği sayısıdır. Sayfadaki öğrenme eğrisi: 1 aylık veriyle ~%47, ~80 arıza örneğiyle ~%76'ya çıkar, sonra yavaşlar. Nadir arıza türleri (ör. vakum pompası) için yeterli örnek birikmeden model o türü öğrenemez.
 
 Modeli yeniden eğitmek (isteğe bağlı; eğitilmiş model repoda hazır, uygulama için Python gerekmez):
 ```bash

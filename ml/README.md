@@ -22,5 +22,6 @@ npm run ml:train    →  src/ml/modelData.ts   (Python: ml/train.py)
 
 - `dataset.csv`'yi simülatör yerine **gerçek SQLite verisinden** (collector'ın `bucket` tablosu + duruş kayıtları) üretmek gerekir. Özellik kodu (`src/ml/features.ts`) aynı kalır.
 - Etiketin kalitesi her şeydir: arızaların doğru zaman ve **türle** (rulman, vakum pompası…) kayıtlı olması gerekir. Ani arızalar (kontrol / elektrik) ayrı tutulmalı.
+- "Son bakımdan / değişimden beri" özellikleri 48 saatte sınırlanır: canlı sistem kısa geçmişle başladığında eğitimdekinden farklı değer görmesin (eğitim / çalışma tutarsızlığı).
 - Devreye alma referansları (`dbo.MachineTags.Baseline`) her makine için kurulumun ilk haftasında ölçülmeli; büyük revizyondan sonra yenilenmeli.
 - Notebook'ta çalışmak istersen: `ml/.venv/bin/pip install jupyter` ve `train.py`'deki fonksiyonları içe aktar.

@@ -51,6 +51,44 @@ export async function writeRows(pool: ConnectionPool, rows: RecordedRows): Promi
     for (const q of rows.quality) t.rows.add(q.machineId, new Date(q.sampleT), q.characteristic, q.subgroupNo, q.sampleIdx, q.value, q.nominal, q.lsl, q.usl)
     tables.push(t)
   }
+  if (rows.opEvents.length) {
+    const t = new sql.Table('dbo.OperationEvents')
+    t.create = false
+    t.columns.add('SerialNo', sql.VarChar(20), { nullable: false })
+    t.columns.add('PartNumber', sql.NVarChar(30), { nullable: false })
+    t.columns.add('OperationNo', sql.VarChar(10), { nullable: false })
+    t.columns.add('MachineId', sql.VarChar(10), { nullable: false })
+    t.columns.add('OperatorId', sql.VarChar(10), { nullable: true })
+    t.columns.add('EventTimeUtc', sql.DateTime2(3), { nullable: false })
+    t.columns.add('EventType', sql.VarChar(5), { nullable: false })
+    t.columns.add('Result', sql.VarChar(3), { nullable: true })
+    t.columns.add('HeatNo', sql.VarChar(20), { nullable: true })
+    t.columns.add('BatchNo', sql.VarChar(20), { nullable: true })
+    for (const e of rows.opEvents) t.rows.add(e.serialNo, e.partNumber, e.operationNo, e.machineId, e.operatorId, new Date(e.t), e.eventType, e.result, e.heatNo, e.batchNo)
+    tables.push(t)
+  }
+  if (rows.ncrs.length) {
+    const t = new sql.Table('dbo.Nonconformances')
+    t.create = false
+    t.columns.add('NcrNo', sql.VarChar(20), { nullable: false })
+    t.columns.add('SerialNo', sql.VarChar(20), { nullable: false })
+    t.columns.add('PartNumber', sql.NVarChar(30), { nullable: false })
+    t.columns.add('MachineId', sql.VarChar(10), { nullable: false })
+    t.columns.add('OperationNo', sql.VarChar(10), { nullable: false })
+    t.columns.add('DetectedUtc', sql.DateTime2(3), { nullable: false })
+    t.columns.add('DefectType', sql.NVarChar(60), { nullable: false })
+    for (const n of rows.ncrs) t.rows.add(n.ncrNo, n.serialNo, n.partNumber, n.machineId, n.operationNo, new Date(n.t), n.defectType)
+    tables.push(t)
+  }
+  if (rows.mrb.length) {
+    const t = new sql.Table('dbo.MrbDecisions')
+    t.create = false
+    t.columns.add('NcrNo', sql.VarChar(20), { nullable: false })
+    t.columns.add('DecisionUtc', sql.DateTime2(3), { nullable: false })
+    t.columns.add('Disposition', sql.VarChar(12), { nullable: false })
+    for (const d of rows.mrb) t.rows.add(d.ncrNo, new Date(d.t), d.disposition)
+    tables.push(t)
+  }
   if (rows.counters.length) {
     const t = new sql.Table('dbo.ProductionCounters')
     t.create = false

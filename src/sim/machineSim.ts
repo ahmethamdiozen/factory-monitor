@@ -67,8 +67,12 @@ export const STORIES: Record<string, Story> = {
   M07: { forced: [{ fromMin: -45, toMin: 25, kind: 'slow', reasonId: TRUTH.FEED, factor: 0.8 }] },
   // FRZ-04: B vardiyasında yeni operatör
   M08: { eff: 0.97, rookieInB: true },
-  // FRN-01: yeni şarj bekliyor (önceki operasyonlardan parça gelmedi)
-  M09: { forced: [{ fromMin: -22, toMin: 14, kind: 'stop', state: STATE.STOPPED, reasonId: 6 }] },
+  // FRN-01: yeni şarj bekliyor; ısıtıcı eleman zayıflıyor → son şarjlar set değerinin altında kalıyor
+  // (AMS 2750 reçete dışı riski) ve öngörücü bakım ısıtıcıyı işaret ediyor; arıza ~2 gün sonra
+  M09: {
+    degrade: { mode: 'heater', fromH: -100, failAtH: 50 },
+    forced: [{ fromMin: -22, toMin: 14, kind: 'stop', state: STATE.STOPPED, reasonId: 6 }],
+  },
   // FRN-02: ~3 saat önce vakum pompası arızalandı; model önceden uyarmıştı
   M10: { degrade: { mode: 'vacuum', fromH: -110, failAtH: -170 / 60 }, forced: [{ fromMin: -170, toMin: -50, kind: 'stop', state: STATE.STOPPED, reasonId: 17 }] },
   // KPL-01: toz besleme dalgalanıyor
@@ -80,8 +84,8 @@ const MODE_TIMING: Record<ModeId, { onsetDays: [number, number]; pfDays: [number
   bearing: { onsetDays: [30, 60], pfDays: [3, 18] },
   axis: { onsetDays: [40, 80], pfDays: [3, 14] },
   coolant: { onsetDays: [30, 60], pfDays: [2, 9] },
-  heater: { onsetDays: [30, 60], pfDays: [3, 12] },
-  vacuum: { onsetDays: [30, 60], pfDays: [2, 10] },
+  heater: { onsetDays: [20, 40], pfDays: [3, 12] },
+  vacuum: { onsetDays: [15, 30], pfDays: [2, 10] },
   gun: { onsetDays: [20, 40], pfDays: [2, 8] },
   feeder: { onsetDays: [25, 50], pfDays: [1, 6] },
 }
@@ -126,7 +130,7 @@ const PROFILES: Record<MachineType, TypeProfile> = {
     suddenEveryDays: [60, 100],
     slowPool: [TRUTH.MATERIAL, TRUTH.TEMP, TRUTH.FEED],
     spcEveryMin: 30,
-    nok: [0.005, 0.02],
+    nok: [0.01, 0.03],
   },
   grinder: {
     micro: { everyMin: [30, 60], durSec: [20, 120] },
@@ -168,7 +172,7 @@ const PROFILES: Record<MachineType, TypeProfile> = {
     suddenEveryDays: [60, 100],
     slowPool: [TRUTH.FEED, TRUTH.TEMP],
     spcEveryMin: 30,
-    nok: [0.008, 0.02],
+    nok: [0.015, 0.03],
   },
   cmm: {
     micro: { everyMin: [120, 240], durSec: [60, 300] },
@@ -434,7 +438,8 @@ export class MachineSim {
         return
       }
     }
-    if (!nearNow) {
+    // Fırında bakım / temizlik şarj ortasında başlamaz; şarj aralarında karar verilir (endSeg)
+    if (!nearNow && this.machine.type !== 'furnace') {
       c += per(p.cleanH * 3600)
       if (u < c) {
         this.seg = { state: STATE.MAINTENANCE, reasonId: 11, remaining: b(between(r, 15, 30) * 60) }
@@ -467,8 +472,21 @@ export class MachineSim {
   }
 
   /** Bir segment bittiğinde: onarım, bakım, program değişimi */
-  private endSeg(seg: Seg): void {
+  private endSeg(seg: Seg, t: number): void {
     if (seg.reasonId !== 10) this.warmup = WARMUP_BUCKETS
+    if (seg.reasonId === 12 && !(t > this.t0 - 90 * MIN && t < this.t0 + 120 * MIN)) {
+      // Şarj yükleme / boşaltma bitti: sıradaki şarjdan önce temizlik veya planlı bakım zamanı mı?
+      const cycleH = this.machine.batchSize / this.machine.idealRate / 3600
+      const r = this.rng
+      if (r() < cycleH / (this.p.maintDays * 24)) {
+        this.seg = { state: STATE.MAINTENANCE, reasonId: 8, remaining: Math.round(between(r, 2, 4) * 360) }
+        return
+      }
+      if (r() < cycleH / this.p.cleanH) {
+        this.seg = { state: STATE.MAINTENANCE, reasonId: 11, remaining: Math.round(between(r, 15, 30) * 6) }
+        return
+      }
+    }
     if (seg.reasonId === 4) {
       // Program değişimi: yeni malzeme partisi; takım da değişir (aşınma hikâyesindeki makinede
       // takım kendi 12 saatlik döngüsüyle değişir, sayaç ona bağlıdır); iş mili yükü kayar
@@ -547,6 +565,8 @@ export class MachineSim {
     let reasonId = 0
 
     if (forced && forced.kind === 'stop') {
+      // Fırında parça / malzeme beklemesi şarj arasıdır: yarım şarj yoktur
+      if (m.type === 'furnace' && forced.reasonId === 6 && !this.forcedWasActive) this.batchProgress = 0
       state = forced.state!
       reasonId = forced.reasonId
       this.seg = null
@@ -559,8 +579,9 @@ export class MachineSim {
       if (this.seg) {
         this.seg.remaining -= 1
         if (this.seg.remaining < 0) {
-          this.endSeg(this.seg)
+          const ended = this.seg
           this.seg = null
+          this.endSeg(ended, t)
         }
       }
       if (!this.seg && this.started) this.startSeg(t)
@@ -791,7 +812,8 @@ export class MachineSim {
           power = 92 + g() * 1.5
           vac = vacOk * 1.5 * (1 + g() * 0.05)
         } else if (p < 0.85) {
-          temp = sp - 3 * dH * dH + g() * 1.2 // tutma (reçete sıcaklığı)
+          // tutma (reçete sıcaklığı): zayıflayan ısıtıcı set değerini tutturamaz → AMS 2750 toleransını aşabilir
+          temp = sp - 8 * Math.pow(dH, 1.5) + g() * 1.2
           power = B.HeaterPowerPct * (1 + 0.45 * Math.pow(dH, 1.3)) * Math.pow(this.batchMass, 0.6) * (1 + g() * 0.025)
           vac = vacOk * (1 + g() * 0.06)
         } else {

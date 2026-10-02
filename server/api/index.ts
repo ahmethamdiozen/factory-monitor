@@ -88,6 +88,37 @@ app.get<{ Querystring: { machine?: string; since?: string } }>('/api/signals', a
   return { points: signalStmt.all(m.id, since, m.type === 'furnace' ? 1 : 0) }
 })
 
+// ---------- İzlenebilirlik (AS9100), MRB ve fırın reçete uyumu (AMS 2750) ----------
+const traceOpStmt = db.prepare('SELECT * FROM part_op WHERE updated_at > ? AND (end IS NULL OR end >= ?) ORDER BY start')
+const traceNcrStmt = db.prepare('SELECT * FROM ncr WHERE updated_at > ? AND t >= ? ORDER BY t')
+const traceCycleStmt = db.prepare('SELECT * FROM furnace_cycle WHERE updated_at > ? AND end >= ? ORDER BY end')
+app.get<{ Querystring: { cursor?: string; from?: string } }>('/api/trace', async (req) => {
+  const cursor = Number(req.query.cursor ?? 0)
+  const from = Number(req.query.from ?? 0)
+  const ops = traceOpStmt.all(cursor, from) as Record<string, unknown>[]
+  const ncrs = traceNcrStmt.all(cursor, from - 7 * 24 * HOUR) as Record<string, unknown>[]
+  const cycles = traceCycleStmt.all(cursor, from) as Record<string, unknown>[]
+  const next = Math.max(cursor, ...[...ops, ...ncrs, ...cycles].map((r) => r.updated_at as number))
+  return {
+    cursor: next,
+    ops: ops.map((r) => ({ serial: r.serial, partNumber: r.part_number, op: r.op, machineId: r.machine_id, operatorId: r.operator_id, start: r.start, end: r.end, result: r.result, heatNo: r.heat_no, batchNo: r.batch_no })),
+    ncrs: ncrs.map((r) => ({ ncrNo: r.ncr_no, serial: r.serial, partNumber: r.part_number, machineId: r.machine_id, op: r.op, t: r.t, defectType: r.defect_type, disposition: r.disposition, dispositionAt: r.disposition_at })),
+    cycles: cycles.map((r) => ({
+      machineId: r.machine_id,
+      start: r.start,
+      end: r.end,
+      holdMin: r.hold_min,
+      minDev: r.min_dev,
+      maxDev: r.max_dev,
+      setpointC: r.setpoint_c,
+      requiredHoldMin: r.required_hold_min,
+      toleranceC: r.tolerance_c,
+      furnaceClass: r.furnace_class,
+      ok: !!r.ok,
+    })),
+  }
+})
+
 // ---------- Öngörücü bakım ----------
 const riskStmt = db.prepare('SELECT machine_id, t, risk, level, factors, source FROM risk WHERE t >= ? ORDER BY t')
 app.get<{ Querystring: { since?: string } }>('/api/risk', async (req) => {

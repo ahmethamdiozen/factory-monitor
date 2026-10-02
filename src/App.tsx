@@ -14,6 +14,7 @@ import OperatorScreen from '@/pages/operator/OperatorScreen'
 import LinePicker from '@/pages/foreman/LinePicker'
 import ForemanScreen from '@/pages/foreman/ForemanScreen'
 import SqlData from '@/pages/SqlData'
+import Traceability from '@/pages/Traceability'
 
 export default function App() {
   return (
@@ -28,6 +29,7 @@ export default function App() {
             <Route path="personel" element={<People />} />
             <Route path="olaylar" element={<Events />} />
             <Route path="ongorucu-bakim" element={<Predictive />} />
+            <Route path="izlenebilirlik" element={<Traceability />} />
             <Route path="metrikler" element={<Guide />} />
           </Route>
           <Route path="makine-ekrani" element={<MachinePicker />} />

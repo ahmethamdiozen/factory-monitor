@@ -6,6 +6,7 @@ import { StatusBadge, STATE_STYLE } from '@/components/machine/StatusBadge'
 import { Meter } from '@/components/ui/meter'
 import { REASON_BY_ID, SLOW_REASONS } from '@/data/registry'
 import { activeRisk, sourceLabel } from '@/data/predictiveView'
+import { currentLabel, fmtDev, lastCycle, maxAbsDev } from '@/data/traceView'
 import type { MachineLive } from '@/data/snapshot'
 import { dayStartOf, fmtDuration, hoursLabel, num, parts, pct } from '@/lib/kpi'
 import { idealCycleHours } from '@/lib/types'
@@ -19,6 +20,8 @@ const hhmm = (t: number, now: number) => {
 
 export function MachineCard({ live, now }: { live: MachineLive; now: number }) {
   const { machine: m, proj } = live
+  const cur = currentLabel(m.id)
+  const cycle = m.type === 'furnace' ? lastCycle(m.id) : undefined
   const st = STATE_STYLE[live.stateKey]
   const running = live.state === 0
   const durSec = (now - live.sinceT) / 1000
@@ -61,8 +64,7 @@ export function MachineCard({ live, now }: { live: MachineLive; now: number }) {
             <span className="truncate text-xs text-fg-2">{m.product}</span>
           </div>
           <div className="mt-0.5 truncate text-[11px] text-fg-2">
-            {m.partNumber} · {m.operation}
-            {m.batchSize > 1 && ` · şarj ${m.batchSize}`}
+            {cur ?? `${m.partNumber} · ${m.operation}`}
           </div>
         </div>
         <div className="flex flex-col items-end gap-1">
@@ -136,6 +138,12 @@ export function MachineCard({ live, now }: { live: MachineLive; now: number }) {
         </div>
         <Meter value={proj.progress} marker={Math.min(1, Math.max(0, elapsed))} color={proj.verdict === 'behind' ? 'var(--serious)' : 'var(--series-1)'} />
         <div className="text-xs">{planLine}</div>
+        {cycle && (
+          <div className={cn('flex items-center gap-1 text-xs', cycle.ok ? 'text-good-text' : 'font-medium text-critical-text')} title="AMS 2750: tutma süresi ve set değerinden sapma">
+            {cycle.ok ? <CheckCircle2 className="size-3.5" /> : <AlertTriangle className="size-3.5" />}
+            Son şarj {cycle.ok ? 'reçeteye uygun' : 'reçete dışı'} · maks. sapma {fmtDev(maxAbsDev(cycle) === Math.abs(cycle.minDev) ? cycle.minDev : cycle.maxDev)}
+          </div>
+        )}
       </div>
 
       <div className="flex items-center gap-3 border-t pt-2.5">

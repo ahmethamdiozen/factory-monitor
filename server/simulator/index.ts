@@ -8,6 +8,8 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { dirname } from 'node:path'
 import { MACHINES } from '@/sim/factoryDef'
 import { MachineSim, alignBucket } from '@/sim/machineSim'
+import { SerialRouter } from '@/sim/serialRouter'
+import { operatorNoFromDefs } from '@/pipeline/localPipeline'
 import { PlcRecorder, emptyRows } from '@/sim/plcRecorder'
 import type { RecordedRows } from '@/sim/plcRecorder'
 import { BUCKET_MS } from '@/lib/types'
@@ -89,18 +91,32 @@ await ensureAssignments(pool, state.startT - DAY, Date.now() + 7 * DAY)
 say(`başlangıç ${new Date(state.t0).toLocaleString('tr-TR')} · hikâyeler bu ana göre kurgulandı`)
 if (Date.now() - state.startT > 3 * DAY) say('not: simülatör uzun süredir çalışıyor; sunum öncesi `npm run sim:reset` önerilir')
 
-const sims = MACHINES.map((m, idx) => ({ sim: new MachineSim(m, idx, state.t0), rec: new PlcRecorder(m) }))
+const sims = MACHINES.map((m, idx) => ({ id: m.id, sim: new MachineSim(m, idx, state.t0), rec: new PlcRecorder(m) }))
+// MES: seri numaralı parçalar (tüm makineler aynı zaman sırasıyla ilerlediği için her çalıştırmada aynı sonuç)
+const router = new SerialRouter(MACHINES, state.t0, { operatorAt: operatorNoFromDefs })
+const routerInit = emptyRows()
+router.init(state.startT, routerInit)
+let pendingInit: RecordedRows | null = lastSampleT === null ? routerInit : null
 let i = 0
 const tOf = (k: number) => state.startT + k * BUCKET_MS
 
 /** i. dilimden itibaren, bitişi `until` anına kadar olan dilimleri üretir. */
 async function advance(until: number, flushEvery = 20000): Promise<number> {
-  let rows: RecordedRows = emptyRows()
+  let rows: RecordedRows = pendingInit ?? emptyRows()
+  pendingInit = null
   let written = 0
   while (tOf(i) + BUCKET_MS <= until) {
     const t = tOf(i)
     const write = lastSampleT === null || t + BUCKET_MS > lastSampleT
-    for (const s of sims) s.rec.record(s.sim.step(i, t), rows, write)
+    // Geçmişi yeniden üretirken (yeniden başlatma) MES satırları da sadece yeni dilimler için yazılır
+    const mes = write ? rows : emptyRows()
+    for (const s of sims) {
+      const raw = s.sim.step(i, t)
+      s.rec.record(raw, rows, write)
+      router.setLot(s.id, raw.materialLot)
+      router.complete(s.id, t + BUCKET_MS, raw.produced, raw.rejects, mes)
+    }
+    router.tick(t + BUCKET_MS, mes)
     i++
     if (rows.counters.length >= flushEvery) {
       written += await writeRows(pool, rows)
@@ -131,7 +147,7 @@ setInterval(async () => {
       lastHousekeeping = Date.now()
       await ensureAssignments(pool, Date.now(), Date.now() + 7 * DAY)
       const cut = new Date(Date.now() - 7 * DAY)
-      for (const [tbl, col] of [['ProductionCounters', 'SampleTimeUtc'], ['ProcessValues', 'SampleTimeUtc'], ['ProcessTags', 'SampleTimeUtc'], ['QualitySamples', 'SampleTimeUtc'], ['MachineEvents', 'EventTimeUtc']]) {
+      for (const [tbl, col] of [['ProductionCounters', 'SampleTimeUtc'], ['ProcessValues', 'SampleTimeUtc'], ['ProcessTags', 'SampleTimeUtc'], ['OperationEvents', 'EventTimeUtc'], ['MrbDecisions', 'DecisionUtc'], ['Nonconformances', 'DetectedUtc'], ['QualitySamples', 'SampleTimeUtc'], ['MachineEvents', 'EventTimeUtc']]) {
         await pool.request().input('cut', cut).query(`DELETE FROM dbo.${tbl} WHERE ${col} < @cut`)
       }
     }

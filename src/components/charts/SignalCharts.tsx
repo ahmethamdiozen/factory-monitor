@@ -11,7 +11,7 @@ import type { ChannelInfo, Machine } from '@/lib/types'
 
 const HOUR = 3600e3
 
-export function fmtSignal(v: number | null): string {
+function fmtSignal(v: number | null): string {
   if (v === null || !Number.isFinite(v)) return '—'
   if (v !== 0 && Math.abs(v) < 0.01) return v.toExponential(1).replace('.', ',')
   return v.toLocaleString('tr-TR', { maximumFractionDigits: Math.abs(v) < 10 ? 2 : 1 })

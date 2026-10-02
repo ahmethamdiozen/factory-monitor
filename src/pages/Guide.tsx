@@ -72,8 +72,10 @@ const GROUPS: { title: string; items: Item[] }[] = [
   {
     title: 'Havacılık uyumu',
     items: [
-      { name: 'Seri numaralı izlenebilirlik (AS9100)', desc: 'Her parçanın hangi makinede, hangi operatörle, hangi malzeme partisinden ve hangi fırın şarjıyla üretildiği.', status: 'data' },
-      { name: 'Fırın pirometrisi (AMS 2750)', desc: 'Isıl işlem reçetesine uyum: set değerinden sapma, tutma süresi, fırın sınıfı toleransı.', status: 'data' },
+      { name: 'Seri numaralı izlenebilirlik (AS9100)', desc: 'Her parçanın hangi makinede, hangi operatörle, hangi malzeme partisinden (ısıl no) ve hangi fırın şarjıyla üretildiği; parçanın şu an nerede olduğu.', status: 'live', where: 'İzlenebilirlik, Makine kartı' },
+      { name: 'Fırın reçete uyumu (AMS 2750)', desc: 'Her şarjda tutma süresi ve set değerinden sapma reçeteyle (fırın sınıfı toleransı) karşılaştırılır; kesintiye uğrayan şarj reçete dışı sayılır.', status: 'live', where: 'İzlenebilirlik, Fırın kartı' },
+      { name: 'Uygunsuzluk raporu ve MRB kararı', desc: 'Uygunsuz parça için NCR açılır; MRB olduğu gibi kullan / yeniden işle / hurda kararı verir. Hücre ve vardiya bazında sayılır.', status: 'live', where: 'Kalite, İzlenebilirlik' },
+      { name: 'Fırın pirometrisi (TUS / SAT)', desc: 'Sıcaklık homojenliği ve sistem doğruluğu testlerinin takvimi ve sonuçları (AMS 2750 periyodik testleri).', status: 'data' },
       { name: 'İlk parça muayenesi (AS9102)', desc: 'Yeni parça / program değişiminden sonra ilk parçanın tam ölçümü ve onayı.', status: 'data' },
       { name: 'Özel prosesler (NADCAP)', desc: 'Isıl işlem, kaplama ve tahribatsız muayene gibi özel proseslerin kayıt ve uygunluk takibi.', status: 'data' },
     ],

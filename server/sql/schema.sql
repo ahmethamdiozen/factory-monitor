@@ -153,3 +153,55 @@ CREATE TABLE dbo.QualitySamples (
   Usl             decimal(12,4) NOT NULL
 );
 GO
+-- MES: seri numaralı operasyon kayıtları (AS9100 izlenebilirlik). Başlangıç ve bitiş ayrı satırdır.
+IF OBJECT_ID('dbo.OperationEvents') IS NULL
+CREATE TABLE dbo.OperationEvents (
+  Id            bigint IDENTITY(1,1) NOT NULL PRIMARY KEY,
+  SerialNo      varchar(20)   NOT NULL,
+  PartNumber    nvarchar(30)  NOT NULL,
+  OperationNo   varchar(10)   NOT NULL,
+  MachineId     varchar(10)   NOT NULL,
+  OperatorId    varchar(10)   NULL,
+  EventTimeUtc  datetime2(3)  NOT NULL,
+  EventType     varchar(5)    NOT NULL, -- START / END
+  Result        varchar(3)    NULL,     -- END'de: OK / NOK
+  HeatNo        varchar(20)   NULL,     -- malzeme ısıl (dövme parti) no
+  BatchNo       varchar(20)   NULL,     -- fırın şarj no
+  INDEX IX_OperationEvents_Serial (SerialNo),
+  INDEX IX_OperationEvents_Time (EventTimeUtc)
+);
+GO
+-- Uygunsuzluk raporları (NCR) ve MRB kararları
+IF OBJECT_ID('dbo.Nonconformances') IS NULL
+CREATE TABLE dbo.Nonconformances (
+  Id           bigint IDENTITY(1,1) NOT NULL PRIMARY KEY,
+  NcrNo        varchar(20)   NOT NULL UNIQUE,
+  SerialNo     varchar(20)   NOT NULL,
+  PartNumber   nvarchar(30)  NOT NULL,
+  MachineId    varchar(10)   NOT NULL,
+  OperationNo  varchar(10)   NOT NULL,
+  DetectedUtc  datetime2(3)  NOT NULL,
+  DefectType   nvarchar(60)  NOT NULL
+);
+GO
+IF OBJECT_ID('dbo.MrbDecisions') IS NULL
+CREATE TABLE dbo.MrbDecisions (
+  Id           bigint IDENTITY(1,1) NOT NULL PRIMARY KEY,
+  NcrNo        varchar(20)   NOT NULL,
+  DecisionUtc  datetime2(3)  NOT NULL,
+  Disposition  varchar(12)   NOT NULL  -- use-as-is / rework / scrap
+);
+GO
+-- Isıl işlem reçeteleri (AMS 2750: fırın sınıfı, sıcaklık toleransı, tutma süresi)
+IF OBJECT_ID('dbo.FurnaceRecipes') IS NULL
+CREATE TABLE dbo.FurnaceRecipes (
+  MachineId     varchar(10)   NOT NULL REFERENCES dbo.Machines(MachineId),
+  OperationNo   varchar(10)   NOT NULL,
+  RecipeName    nvarchar(60)  NOT NULL,
+  SetpointC     decimal(6,1)  NOT NULL,
+  HoldMin       int           NOT NULL,
+  ToleranceC    decimal(4,1)  NOT NULL,
+  FurnaceClass  tinyint       NOT NULL,
+  PRIMARY KEY (MachineId, OperationNo)
+);
+GO

@@ -6,6 +6,7 @@ import { BUCKET_MS } from '@/lib/types'
 import type { FactoryMeta, MachineSeries, SlowEvent, SpcPoint, StopEvent } from '@/lib/types'
 import type { MaintNotification, NotificationStatus, RiskPoint } from '@/ml/types'
 import type { SignalPoint } from '@/data/signals'
+import type { FurnaceCycle, Ncr, PartOp } from '@/pipeline/trace'
 
 /**
  * Gerçek veri hattından (SQL Server → Collector → SQLite → API) beslenen veri kaynağı.
@@ -59,6 +60,13 @@ export class ApiDataSource implements LiveSource {
   private risk = new Map<string, RiskPoint[]>()
   private lastRiskT = 0
   private notes: MaintNotification[] = []
+  // İzlenebilirlik: değişen kayıtlar imleçle çekilir
+  private traceCursor = 0
+  private ops = new Map<string, PartOp>()
+  private opList: PartOp[] = []
+  private ncrMap = new Map<string, Ncr>()
+  private ncrList: Ncr[] = []
+  private cycles: FurnaceCycle[] = []
   /** Sinyaller sadece istenen makine için, istendiğinde çekilir (makine detayı) */
   private sig = new Map<string, { points: SignalPoint[]; at: number; loading: boolean }>()
   private eventCursor = 0
@@ -112,10 +120,15 @@ export class ApiDataSource implements LiveSource {
     this.lastSpcT = 0
     this.risk.clear()
     this.lastRiskT = 0
+    this.traceCursor = 0
+    this.ops.clear()
+    this.ncrMap.clear()
+    this.cycles = []
     this.applySeries(res)
     await this.loadEvents()
     await this.loadSpc()
     await this.loadPredictive()
+    await this.loadTrace()
     this.ready = true
   }
 
@@ -130,6 +143,17 @@ export class ApiDataSource implements LiveSource {
     await this.loadEvents()
     await this.loadSpc()
     await this.loadPredictive()
+    await this.loadTrace()
+  }
+
+  private async loadTrace(): Promise<void> {
+    const res = await getJson<{ cursor: number; ops: PartOp[]; ncrs: Ncr[]; cycles: FurnaceCycle[] }>(`/api/trace?cursor=${this.traceCursor}&from=${this.startT}`)
+    for (const o of res.ops) this.ops.set(`${o.serial}|${o.machineId}|${o.start}`, o)
+    for (const n of res.ncrs) this.ncrMap.set(n.ncrNo, n)
+    if (res.ops.length) this.opList = [...this.ops.values()].sort((a, b) => a.start - b.start)
+    if (res.ncrs.length) this.ncrList = [...this.ncrMap.values()].sort((a, b) => b.t - a.t)
+    if (res.cycles.length) this.cycles = [...this.cycles, ...res.cycles].sort((a, b) => a.end - b.end)
+    this.traceCursor = res.cursor
   }
 
   private applySeries(res: SeriesResponse): void {
@@ -195,6 +219,15 @@ export class ApiDataSource implements LiveSource {
     this.notes = (await getJson<{ notifications: MaintNotification[] }>('/api/notifications')).notifications
   }
 
+  partOps(): PartOp[] {
+    return this.opList
+  }
+  ncrs(): Ncr[] {
+    return this.ncrList
+  }
+  furnaceCycles(): FurnaceCycle[] {
+    return this.cycles
+  }
   signals(id: string): SignalPoint[] {
     const c = this.sig.get(id) ?? { points: [], at: 0, loading: false }
     this.sig.set(id, c)

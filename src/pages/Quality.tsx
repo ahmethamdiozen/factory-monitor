@@ -6,7 +6,9 @@ import { Card, CardHeader } from '@/components/ui/card'
 import { Segmented } from '@/components/ui/segmented'
 import { StatTile } from '@/components/ui/stat-tile'
 import { hourlyKpi, machinesOfLine } from '@/data/aggregate'
-import { DEFECT_TYPES, LINES, MACHINES, MACHINE_BY_ID } from '@/data/registry'
+import { LINES, LINE_BY_ID, MACHINES, MACHINE_BY_ID, shiftOf } from '@/data/registry'
+import { DISPOSITION_LABEL } from '@/pipeline/trace'
+import { familyOf } from '@/data/traceView'
 import { useSnapshot } from '@/data/snapshot'
 import { source } from '@/data/store'
 import { machineKpi, num, pct, sumKpi, windowRange } from '@/lib/kpi'
@@ -31,14 +33,29 @@ export default function Quality() {
     const kpis = MACHINES.map((x) => machineKpi(source.machineSeries(x.id), x, w.i0, w.i1))
     const total = sumKpi(kpis)
     const byMachine = MACHINES.map((x, i) => ({ m: x, rate: kpis[i].total ? kpis[i].nok / kpis[i].total : 0, nok: kpis[i].nok })).sort((a, b) => b.rate - a.rate)
+    // Uygunsuzluk türleri: NCR kayıtlarından (dbo.Nonconformances)
     const defects = new Map<string, number>()
-    for (const l of LINES) {
-      const nokLine = MACHINES.reduce((a, x, i) => a + (x.lineId === l.id ? kpis[i].nok : 0), 0)
-      for (const d of DEFECT_TYPES[l.id]) defects.set(`${d.label} · ${l.short}`, (defects.get(`${d.label} · ${l.short}`) ?? 0) + nokLine * d.weight)
+    for (const n of source.ncrs()) {
+      if (n.t < w.startT || n.t > w.endT) continue
+      const k = `${n.defectType} · ${LINE_BY_ID[MACHINE_BY_ID[n.machineId]?.lineId]?.short ?? ''}`
+      defects.set(k, (defects.get(k) ?? 0) + 1)
     }
     const defectRows = [...defects.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8)
     return { total, byMachine, defectRows }
   }, [win, now])
+
+  const mrb = useMemo(() => {
+    const list = source.ncrs().filter((n) => n.t > now - 48 * 3600e3)
+    const matrix = new Map<string, { A: number; B: number; C: number }>()
+    for (const n of list) {
+      const lineId = MACHINE_BY_ID[n.machineId]?.lineId
+      if (!lineId) continue
+      const row = matrix.get(lineId) ?? { A: 0, B: 0, C: 0 }
+      row[shiftOf(n.t)]++
+      matrix.set(lineId, row)
+    }
+    return { list, matrix, open: list.filter((n) => !n.disposition).length }
+  }, [now])
 
   const spc = useMemo(() => {
     const pts = source.spc(mid).slice(-SPC_POINTS)
@@ -235,12 +252,104 @@ export default function Quality() {
           <div className="px-2 pb-2 pt-1"><EChart option={trendOption} height={260} label="Hücre bazlı uygunsuzluk oranı" /></div>
         </Card>
         <Card>
-          <CardHeader title="Uygunsuzluk türü Pareto" subtitle={`${WINDOW_LABEL[win]} · yer tutucu dağılım`} />
-          <div className="px-2 pb-2 pt-1"><EChart option={defectOption} height={260} label="Uygunsuzluk türü Pareto grafiği" /></div>
+          <CardHeader title="Uygunsuzluk türü Pareto" subtitle={`${WINDOW_LABEL[win]} · uygunsuzluk raporlarından (NCR)`} />
+          {stats.defectRows.length ? (
+            <div className="px-2 pb-2 pt-1"><EChart option={defectOption} height={260} label="Uygunsuzluk türü Pareto grafiği" /></div>
+          ) : (
+            <p className="px-4 py-10 text-center text-xs text-fg-2">Bu dönemde uygunsuzluk raporu yok</p>
+          )}
         </Card>
         <Card>
           <CardHeader title="Makineye göre uygunsuzluk oranı" subtitle={`${WINDOW_LABEL[win]} · en yüksek 3 vurgulu`} />
           <div className="px-2 pb-2 pt-1"><EChart option={machineOption} height={260} label="Makine bazlı uygunsuzluk oranı" /></div>
+        </Card>
+      </section>
+
+      <section className="grid grid-cols-3 gap-4">
+        <Card className="col-span-2">
+          <CardHeader title="Uygunsuzluk raporları ve MRB kararları" subtitle={`Son 48 saat · ${mrb.open} rapor karar bekliyor · MRB: malzeme inceleme kurulu`} />
+          <div className="max-h-[360px] overflow-y-auto">
+            <table className="w-full text-xs">
+              <thead className="sticky top-0 bg-card text-fg-2">
+                <tr className="border-y">
+                  <th className="px-4 py-2 text-left font-medium">NCR</th>
+                  <th className="px-2 py-2 text-left font-medium">Zaman</th>
+                  <th className="px-2 py-2 text-left font-medium">Seri no · parça</th>
+                  <th className="px-2 py-2 text-left font-medium">Makine</th>
+                  <th className="px-2 py-2 text-left font-medium">Uygunsuzluk</th>
+                  <th className="px-4 py-2 text-left font-medium">MRB kararı</th>
+                </tr>
+              </thead>
+              <tbody>
+                {mrb.list.map((n) => (
+                  <tr key={n.ncrNo} className="border-b last:border-0">
+                    <td className="tnum whitespace-nowrap px-4 py-1.5 font-medium">{n.ncrNo}</td>
+                    <td className="tnum px-2">{hhmm(n.t)}</td>
+                    <td className="px-2">
+                      <span className="tnum whitespace-nowrap font-medium">{n.serial}</span> <span className="text-fg-2">{familyOf(n.partNumber)?.name ?? n.partNumber}</span>
+                    </td>
+                    <td className="whitespace-nowrap px-2">
+                      {MACHINE_BY_ID[n.machineId]?.code} <span className="text-fg-3">{n.op}</span>
+                    </td>
+                    <td className="px-2">{n.defectType}</td>
+                    <td className="px-4">
+                      {n.disposition ? (
+                        <span className={cn('font-medium', n.disposition === 'scrap' ? 'text-critical-text' : n.disposition === 'rework' ? 'text-warning-text' : 'text-good-text')}>
+                          {DISPOSITION_LABEL[n.disposition]}
+                          <span className="font-normal text-fg-3"> · {Math.round((n.dispositionAt! - n.t) / 3600e3)} sa sonra</span>
+                        </span>
+                      ) : (
+                        <span className="text-fg-2">Karar bekleniyor · {Math.round((now - n.t) / 3600e3)} sa</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+                {!mrb.list.length && (
+                  <tr>
+                    <td colSpan={6} className="px-4 py-6 text-center text-fg-2">
+                      Son 48 saatte uygunsuzluk raporu yok
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+        <Card>
+          <CardHeader title="Uygunsuz parça · hücre × vardiya" subtitle="Son 48 saat · NCR sayısı · A 06–14, B 14–22, C 22–06" />
+          <table className="mt-2 w-full text-xs">
+            <thead className="text-fg-2">
+              <tr className="border-y">
+                <th className="px-4 py-2 text-left font-medium">Hücre</th>
+                {(['A', 'B', 'C'] as const).map((sh) => (
+                  <th key={sh} className="px-2 py-2 text-right font-medium">
+                    {sh}
+                  </th>
+                ))}
+                <th className="px-4 py-2 text-right font-medium">Toplam</th>
+              </tr>
+            </thead>
+            <tbody>
+              {LINES.map((l) => {
+                const row = mrb.matrix.get(l.id) ?? { A: 0, B: 0, C: 0 }
+                const tot = row.A + row.B + row.C
+                return (
+                  <tr key={l.id} className="border-b last:border-0">
+                    <td className="whitespace-nowrap px-4 py-2 font-medium">{l.short}</td>
+                    {(['A', 'B', 'C'] as const).map((sh) => (
+                      <td key={sh} className={cn('tnum px-2 text-right', row[sh] > 0 ? 'font-medium text-critical-text' : 'text-fg-3')}>
+                        {row[sh]}
+                      </td>
+                    ))}
+                    <td className="tnum px-4 text-right font-semibold">{tot}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+          <p className="px-4 pb-3 pt-3 text-[11px] leading-relaxed text-fg-3">
+            Ölçüm makinesinde (CMM) bulunan uygunsuzluk Hücre 4'e yazılır; türü parçanın geldiği hücreye göredir. MRB kararı verilene kadar parça karantinadadır ve rotada ilerlemez.
+          </p>
         </Card>
       </section>
     </div>

@@ -7,7 +7,7 @@
 import type { ConnectionPool } from 'mssql'
 import { MachineTransformer, emptyOutput } from '@/pipeline/transform'
 import type { TransformOutput } from '@/pipeline/transform'
-import type { CounterRow, EventRow, ProcessRow, QualityRow, TagRow } from '@/pipeline/rows'
+import type { CounterRow, EventRow, MrbRow, NcrRow, OpEventRow, ProcessRow, QualityRow, TagRow } from '@/pipeline/rows'
 import { channelBaselines, channelInfos } from '@/sim/tags'
 import type { Channel, TagMap } from '@/sim/tags'
 import { shiftOf } from '@/sim/factoryDef'
@@ -34,6 +34,8 @@ let pool: ConnectionPool | null = null
 interface Ref {
   meta: Omit<FactoryMeta, 'datasetId'>
   toolLife: Map<string, number>
+  /** Makine → fırın reçetesi (dbo.FurnaceRecipes) */
+  recipes: Map<string, { setpointC: number; holdMin: number; toleranceC: number; furnaceClass: number }>
   /** Makine → etiket sözlüğü (dbo.MachineTags) */
   tags: Map<string, (TagMap & { baseline: number | null })[]>
   hire: Map<string, number>
@@ -61,6 +63,8 @@ async function loadRef(p: ConnectionPool): Promise<Ref> {
   const reasons = (await p.request().query('SELECT ReasonCode, Description, Category, IsPlanned FROM dbo.DowntimeReasons ORDER BY ReasonCode')).recordset
   const employees = (await p.request().query('SELECT EmployeeId, FullName, Role, HireDate FROM dbo.Employees')).recordset
   const tagRows = (await p.request().query('SELECT MachineId, Tag, Channel, RelativeTo, Unit, Description, Baseline FROM dbo.MachineTags')).recordset
+  const recipeRows = (await p.request().query('SELECT MachineId, SetpointC, HoldMin, ToleranceC, FurnaceClass FROM dbo.FurnaceRecipes')).recordset
+  const recipes = new Map(recipeRows.map((r) => [r.MachineId as string, { setpointC: Number(r.SetpointC), holdMin: r.HoldMin as number, toleranceC: Number(r.ToleranceC), furnaceClass: r.FurnaceClass as number }]))
   const tags = new Map<string, (TagMap & { baseline: number | null })[]>()
   for (const r of tagRows) {
     const list = tags.get(r.MachineId) ?? []
@@ -126,7 +130,7 @@ async function loadRef(p: ConnectionPool): Promise<Ref> {
     ],
     people,
   }
-  return { meta, toolLife: new Map(machines.map((m) => [m.MachineId as string, m.ToolLifeCycles as number])), tags, hire, operatorAt }
+  return { meta, toolLife: new Map(machines.map((m) => [m.MachineId as string, m.ToolLifeCycles as number])), recipes, tags, hire, operatorAt }
 }
 
 function experienceAt(machineId: string, t: number): number | null {
@@ -144,7 +148,7 @@ function transformerFor(machineId: string): MachineTransformer {
     const m = ref!.meta.machines.find((x) => x.id === machineId)
     if (!m) throw new Error(`Bilinmeyen makine: ${machineId}`)
     const tags = ref!.tags.get(m.id) ?? []
-    tr = new MachineTransformer({ id: m.id, type: m.type, idealCycleMs: 1000 / m.idealRate, toolLife: ref!.toolLife.get(m.id) ?? 1e9, tags, ref: channelBaselines(tags) }, { experienceAt })
+    tr = new MachineTransformer({ id: m.id, type: m.type, idealCycleMs: 1000 / m.idealRate, toolLife: ref!.toolLife.get(m.id) ?? 1e9, tags, ref: channelBaselines(tags), recipe: ref!.recipes.get(m.id) }, { experienceAt })
     const snap = kvGet<string>(db, `tr:${machineId}`)
     if (snap) tr.restore(snap)
     transformers.set(machineId, tr)
@@ -163,6 +167,11 @@ const stmt = {
   sync: db.prepare(`INSERT INTO sync_state (tbl, last_id, last_sync_at, rows_total) VALUES (?,?,?,?)
     ON CONFLICT (tbl) DO UPDATE SET last_id = excluded.last_id, last_sync_at = excluded.last_sync_at, rows_total = sync_state.rows_total + excluded.rows_total`),
   lastIds: db.prepare('SELECT tbl, last_id FROM sync_state'),
+  opStart: db.prepare(`INSERT OR REPLACE INTO part_op (serial, machine_id, start, part_number, op, operator_id, end, result, heat_no, batch_no, updated_at) VALUES (?,?,?,?,?,?,NULL,NULL,?,?,?)`),
+  opEnd: db.prepare(`UPDATE part_op SET end = ?, result = ?, operator_id = COALESCE(?, operator_id), updated_at = ? WHERE serial = ? AND machine_id = ? AND end IS NULL`),
+  ncr: db.prepare(`INSERT OR IGNORE INTO ncr (ncr_no, serial, part_number, machine_id, op, t, defect_type, updated_at) VALUES (?,?,?,?,?,?,?,?)`),
+  mrb: db.prepare('UPDATE ncr SET disposition = ?, disposition_at = ?, updated_at = ? WHERE ncr_no = ?'),
+  cycle: db.prepare(`INSERT OR REPLACE INTO furnace_cycle (machine_id, start, end, hold_min, min_dev, max_dev, setpoint_c, required_hold_min, tolerance_c, furnace_class, ok, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`),
   lastBucket: db.prepare('SELECT machine_id, MAX(t) AS t FROM bucket GROUP BY machine_id'),
   risk: db.prepare('INSERT OR REPLACE INTO risk (machine_id, t, risk, level, factors, source) VALUES (?,?,?,?,?,?)'),
   notifIns: db.prepare('INSERT OR IGNORE INTO notification (id, t, machine_id, line_id, title, message, recipients, risk, factors, source) VALUES (?,?,?,?,?,?,?,?,?,?)'),
@@ -224,10 +233,18 @@ function initPredictive(): void {
 let updSeq = 0
 const nextUpd = () => (updSeq = Math.max(updSeq + 1, Date.now()))
 
-function persist(out: TransformOutput, ids: Record<string, { lastId: number; rows: number }>): void {
+function persist(out: TransformOutput, ids: Record<string, { lastId: number; rows: number }>, mes: { ops: OpEventRow[]; ncrs: NcrRow[]; mrb: MrbRow[] }): void {
   const upd = nextUpd()
   db.exec('BEGIN')
   try {
+    // MES: başlangıç kaydı yeni operasyon açar, bitiş kaydı açık operasyonu kapatır
+    for (const e of mes.ops) {
+      if (e.eventType === 'START') stmt.opStart.run(e.serialNo, e.machineId, e.t, e.partNumber, e.operationNo, e.operatorId, e.heatNo, e.batchNo, upd)
+      else stmt.opEnd.run(e.t, e.result, e.operatorId, upd, e.serialNo, e.machineId)
+    }
+    for (const n of mes.ncrs) stmt.ncr.run(n.ncrNo, n.serialNo, n.partNumber, n.machineId, n.operationNo, n.t, n.defectType, upd)
+    for (const d of mes.mrb) stmt.mrb.run(d.disposition, d.t, upd, d.ncrNo)
+    for (const c of out.cycles) stmt.cycle.run(c.machineId, c.start, c.end, c.holdMin, c.minDev, c.maxDev, c.setpointC, c.requiredHoldMin, c.toleranceC, c.furnaceClass, c.ok ? 1 : 0, upd)
     const v = (x: number) => (Number.isNaN(x) ? null : x)
     for (const b of out.buckets) stmt.bucket.run(b.machineId, b.t, b.state, b.downReason, b.slowReason, b.speed, b.ok, b.nok, v(b.temp), v(b.vib), v(b.hf), v(b.load), v(b.cur), v(b.aux), v(b.feed))
     for (const e of out.stops) stmt.stop.run(e.machineId, e.state, e.reasonId, e.start, e.end, upd)
@@ -246,14 +263,14 @@ function persist(out: TransformOutput, ids: Record<string, { lastId: number; row
 }
 
 function lastIds(): Record<string, number> {
-  const out: Record<string, number> = { ProductionCounters: 0, ProcessValues: 0, ProcessTags: 0, MachineEvents: 0, QualitySamples: 0 }
+  const out: Record<string, number> = { ProductionCounters: 0, ProcessValues: 0, ProcessTags: 0, MachineEvents: 0, QualitySamples: 0, OperationEvents: 0, Nonconformances: 0, MrbDecisions: 0 }
   for (const r of stmt.lastIds.all() as { tbl: string; last_id: number }[]) out[r.tbl] = r.last_id
   return out
 }
 
 function rebuild(reason: string): void {
   say(`SQLite yeniden kuruluyor: ${reason}`)
-  db.exec('DELETE FROM bucket; DELETE FROM stop_event; DELETE FROM slow_event; DELETE FROM spc_subgroup; DELETE FROM sync_state; DELETE FROM kv; DELETE FROM risk; DELETE FROM notification')
+  db.exec('DELETE FROM bucket; DELETE FROM stop_event; DELETE FROM slow_event; DELETE FROM spc_subgroup; DELETE FROM sync_state; DELETE FROM kv; DELETE FROM risk; DELETE FROM notification; DELETE FROM part_op; DELETE FROM ncr; DELETE FROM furnace_cycle')
   transformers.clear()
   engine = null
   notifier = null
@@ -277,6 +294,16 @@ async function pullOnce(p: ConnectionPool): Promise<{ counters: number; total: n
   const tagRows = (await q('SELECT Id, MachineId, SampleTimeUtc, Tag, Value FROM dbo.ProcessTags WHERE Id > @last AND SampleTimeUtc <= @maxT ORDER BY Id', last.ProcessTags)).recordset
   const events = (await q('SELECT EventId, MachineId, EventTimeUtc, StatusCode, ReasonCode FROM dbo.MachineEvents WHERE EventId > @last AND EventTimeUtc < @maxT ORDER BY EventId', last.MachineEvents)).recordset
   const quality = (await q('SELECT Id, MachineId, SampleTimeUtc, Characteristic, SubgroupNo, SampleIdx, Value, Nominal, Lsl, Usl FROM dbo.QualitySamples WHERE Id > @last AND SampleTimeUtc <= @maxT ORDER BY Id', last.QualitySamples)).recordset
+  // MES (izlenebilirlik ve MRB)
+  const opRows = (await q('SELECT Id, SerialNo, PartNumber, OperationNo, MachineId, OperatorId, EventTimeUtc, EventType, Result, HeatNo, BatchNo FROM dbo.OperationEvents WHERE Id > @last AND EventTimeUtc <= @maxT ORDER BY Id', last.OperationEvents)).recordset
+  const ncrRows = (await q('SELECT Id, NcrNo, SerialNo, PartNumber, MachineId, OperationNo, DetectedUtc, DefectType FROM dbo.Nonconformances WHERE Id > @last AND DetectedUtc <= @maxT ORDER BY Id', last.Nonconformances)).recordset
+  const mrbRows = (await q('SELECT Id, NcrNo, DecisionUtc, Disposition FROM dbo.MrbDecisions WHERE Id > @last AND DecisionUtc <= @maxT ORDER BY Id', last.MrbDecisions)).recordset
+  const ms = (d: Date) => d.getTime()
+  const mes = {
+    ops: opRows.map((r): OpEventRow => ({ serialNo: r.SerialNo, partNumber: r.PartNumber, operationNo: r.OperationNo, machineId: r.MachineId, operatorId: r.OperatorId, t: ms(r.EventTimeUtc), eventType: r.EventType, result: r.Result, heatNo: r.HeatNo, batchNo: r.BatchNo })),
+    ncrs: ncrRows.map((r): NcrRow => ({ ncrNo: r.NcrNo, serialNo: r.SerialNo, partNumber: r.PartNumber, machineId: r.MachineId, operationNo: r.OperationNo, t: ms(r.DetectedUtc), defectType: r.DefectType })),
+    mrb: mrbRows.map((r): MrbRow => ({ ncrNo: r.NcrNo, t: ms(r.DecisionUtc), disposition: r.Disposition })),
+  }
 
   const out = emptyOutput()
   for (const e of events) {
@@ -329,8 +356,11 @@ async function pullOnce(p: ConnectionPool): Promise<{ counters: number; total: n
     ProcessTags: { lastId: lastOf(tagRows, 'Id', last.ProcessTags), rows: tagRows.length },
     MachineEvents: { lastId: lastOf(events, 'EventId', last.MachineEvents), rows: events.length },
     QualitySamples: { lastId: lastOf(quality, 'Id', last.QualitySamples), rows: quality.length },
-  })
-  return { counters: counters.length, total: counters.length + process.length + tagRows.length + events.length + quality.length }
+    OperationEvents: { lastId: lastOf(opRows, 'Id', last.OperationEvents), rows: opRows.length },
+    Nonconformances: { lastId: lastOf(ncrRows, 'Id', last.Nonconformances), rows: ncrRows.length },
+    MrbDecisions: { lastId: lastOf(mrbRows, 'Id', last.MrbDecisions), rows: mrbRows.length },
+  }, mes)
+  return { counters: counters.length, total: counters.length + process.length + tagRows.length + events.length + quality.length + opRows.length + ncrRows.length + mrbRows.length }
 }
 
 // ---------- Ana döngü ----------
@@ -393,6 +423,9 @@ async function poll(): Promise<void> {
       db.prepare('DELETE FROM slow_event WHERE end IS NOT NULL AND end < ?').run(cut)
       db.prepare('DELETE FROM spc_subgroup WHERE t < ?').run(cut)
       db.prepare('DELETE FROM risk WHERE t < ?').run(cut)
+      db.prepare('DELETE FROM part_op WHERE end IS NOT NULL AND end < ?').run(cut)
+      db.prepare('DELETE FROM ncr WHERE t < ?').run(cut)
+      db.prepare('DELETE FROM furnace_cycle WHERE end < ?').run(cut)
     }
   } catch (e) {
     health.error = (e as Error).message.split('\n')[0]

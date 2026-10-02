@@ -3,6 +3,7 @@ import { BUCKET_MS, STATE } from '@/lib/types'
 import { stateFromSqlStatus } from './rows'
 import type { CounterRow, EventRow, ProcessRow, QualityRow, TagRow } from './rows'
 import type { Channel, TagMap } from '@/sim/tags'
+import type { FurnaceCycle } from './trace'
 
 /**
  * Collector'ın "anlamlandırma" katmanı (saf, testli). Bir makinenin SQL satırlarını
@@ -22,6 +23,8 @@ export interface MachineInfo {
   tags?: TagMap[]
   /** Kanal referansları (devreye alma değerleri) */
   ref?: Partial<Record<Channel, number>>
+  /** Fırın reçetesi (dbo.FurnaceRecipes): tutma süresi ve sıcaklık toleransı */
+  recipe?: { setpointC: number; holdMin: number; toleranceC: number; furnaceClass: number }
 }
 
 export interface TransformContext {
@@ -76,9 +79,14 @@ export interface TransformOutput {
   stops: StopOut[]
   slows: SlowOut[]
   spc: SpcOut[]
+  /** Biten fırın çevrimlerinin reçete uyumu */
+  cycles: FurnaceCycle[]
 }
 
-export const emptyOutput = (): TransformOutput => ({ buckets: [], stops: [], slows: [], spc: [] })
+export const emptyOutput = (): TransformOutput => ({ buckets: [], stops: [], slows: [], spc: [], cycles: [] })
+
+/** Fırında set değerine bu kadar yakın sıcaklık "tutma" sayılır (rampa ve soğutma hariç) */
+const SOAK_BAND_C = 15
 
 const SPEED_WINDOW = 6
 const MICROSTOP_REASON = 10
@@ -95,6 +103,8 @@ interface State {
   lotChangedAt: number | null
   speeds: number[]
   quality: { subgroupNo: number; t: number; values: number[] } | null
+  /** Fırın: süren tutma */
+  soak?: { start: number; end: number; min: number; max: number } | null
 }
 
 export class MachineTransformer {
@@ -200,6 +210,7 @@ export class MachineTransformer {
 
     const ch = this.channels(tags)
     const ref = this.info.ref ?? {}
+    if (this.info.recipe) this.trackSoak(t, running, ch.temp, out)
     let slowReason = 0
     const rulesApply = this.info.type !== 'furnace' && this.info.type !== 'cmm'
     if (running && s.speeds.length >= 3 && pv && !rulesApply) {
@@ -231,6 +242,41 @@ export class MachineTransformer {
       ok: Math.max(0, dTotal - dReject),
       nok: Math.max(0, dReject),
       ...ch,
+    })
+  }
+
+  /**
+   * AMS 2750 reçete uyumu: tutma boyunca set değerinden sapmanın en düşük / en yüksek değeri ve
+   * tutma süresi. Tutma, sıcaklık soğutmayla banttan çıkınca biter; süre ve sapma reçeteyle kıyaslanır.
+   */
+  private trackSoak(t: number, running: boolean, dev: number, out: TransformOutput): void {
+    const s = this.s
+    const r = this.info.recipe!
+    if (running && !Number.isNaN(dev) && Math.abs(dev) < SOAK_BAND_C) {
+      if (!s.soak) s.soak = { start: t, end: t, min: dev, max: dev }
+      s.soak.end = t + BUCKET_MS
+      s.soak.min = Math.min(s.soak.min, dev)
+      s.soak.max = Math.max(s.soak.max, dev)
+      return
+    }
+    // Kısa kesinti (ölçüm yok, kısa duruş) tutmayı bitirmez; soğutma (sapma < −bant) bitirir
+    if (!s.soak || !(dev < -SOAK_BAND_C)) return
+    const soak = s.soak
+    s.soak = null
+    const holdMin = (soak.end - soak.start) / 60000
+    if (holdMin < 20) return
+    out.cycles.push({
+      machineId: this.info.id,
+      start: soak.start,
+      end: soak.end,
+      holdMin,
+      minDev: soak.min,
+      maxDev: soak.max,
+      setpointC: r.setpointC,
+      requiredHoldMin: r.holdMin,
+      toleranceC: r.toleranceC,
+      furnaceClass: r.furnaceClass,
+      ok: holdMin >= r.holdMin && Math.max(Math.abs(soak.min), Math.abs(soak.max)) <= r.toleranceC,
     })
   }
 

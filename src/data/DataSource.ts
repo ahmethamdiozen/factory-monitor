@@ -1,6 +1,7 @@
 import type { MachineSeries, SlowEvent, SpcPoint, StopEvent } from '@/lib/types'
 import type { MaintNotification, NotificationStatus, RiskPoint } from '@/ml/types'
 import type { SignalPoint } from './signals'
+import type { FurnaceCycle, Ncr, PartOp } from '@/pipeline/trace'
 
 /**
  * UI'ın veriye erişim sözleşmesi. Canlı uygulamada ApiDataSource (SQL Server → Collector →
@@ -20,6 +21,12 @@ export interface DataSource {
   spc(machineId: string): SpcPoint[]
   /** Süreç sinyallerinin 5 dk'lık ortalamaları (eski → yeni); veri henüz yoksa boş */
   signals(machineId: string): SignalPoint[]
+  /** İzlenebilirlik: seri numaralı operasyon kayıtları (başlangıca göre eski → yeni; sürenlerin end'i null) */
+  partOps(): PartOp[]
+  /** Uygunsuzluk raporları ve MRB kararları (yeni → eski) */
+  ncrs(): Ncr[]
+  /** Fırın çevrimlerinin reçete uyumu (AMS 2750), eski → yeni */
+  furnaceCycles(): FurnaceCycle[]
   /** Öngörücü bakım: makinenin 5 dk'lık risk noktaları (eski → yeni) */
   riskSeries(machineId: string): RiskPoint[]
   /** Bakım bildirimleri (yeni → eski) */

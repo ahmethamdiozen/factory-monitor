@@ -51,3 +51,43 @@ export interface QualityRow {
   lsl: number
   usl: number
 }
+
+/**
+ * MES operasyon kaydı (dbo.OperationEvents): bir seri numaralı parça bir makinede operasyona
+ * başladı / bitirdi. Sadece ekleme; collector başlangıç ve bitişi tek kayda birleştirir.
+ */
+export interface OpEventRow {
+  serialNo: string
+  partNumber: string
+  operationNo: string
+  machineId: string
+  operatorId: string | null
+  t: number
+  eventType: 'START' | 'END'
+  /** Sadece END'de: OK / NOK */
+  result: 'OK' | 'NOK' | null
+  /** Malzeme ısıl (döküm / dövme parti) numarası */
+  heatNo: string | null
+  /** Fırın şarj numarası */
+  batchNo: string | null
+}
+
+/** Uygunsuzluk raporu (dbo.Nonconformances) */
+export interface NcrRow {
+  ncrNo: string
+  serialNo: string
+  partNumber: string
+  machineId: string
+  operationNo: string
+  t: number
+  defectType: string
+}
+
+export type MrbDisposition = 'use-as-is' | 'rework' | 'scrap'
+
+/** MRB kararı (dbo.MrbDecisions) */
+export interface MrbRow {
+  ncrNo: string
+  t: number
+  disposition: MrbDisposition
+}

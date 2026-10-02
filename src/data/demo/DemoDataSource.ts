@@ -3,13 +3,16 @@ import { createSeries, putBuckets } from '@/data/series'
 import type { BucketRow } from '@/data/series'
 import { SQL_TABLES } from '@/data/sqlTables'
 import type { SqlTableData, SqlTableInfo } from '@/data/sqlTables'
-import { experienceFromDefs, machineInfoOf, notifyMachinesFromDefs, tagsBySample } from '@/pipeline/localPipeline'
+import { experienceFromDefs, machineInfoOf, notifyMachinesFromDefs, operatorNoFromDefs, tagsBySample } from '@/pipeline/localPipeline'
+import { SerialRouter } from '@/sim/serialRouter'
+import { TraceStore } from '@/pipeline/trace'
+import type { FurnaceCycle, Ncr, PartOp } from '@/pipeline/trace'
 import { SignalAggregator } from '@/data/signals'
 import type { SignalPoint } from '@/data/signals'
 import { TAGS, tagDefsOf } from '@/sim/tags'
 import { MachineTransformer, emptyOutput } from '@/pipeline/transform'
 import type { SlowOut, StopOut, TransformOutput } from '@/pipeline/transform'
-import { DAY_START_HOUR, DOWNTIME_REASONS, EMPLOYEE_NO, LINES, MACHINES, PEOPLE, SHIFTS } from '@/sim/factoryDef'
+import { DAY_START_HOUR, DOWNTIME_REASONS, EMPLOYEE_NO, FURNACE_RECIPES, LINES, MACHINES, PEOPLE, SHIFTS } from '@/sim/factoryDef'
 import { MachineSim, alignBucket, toolLifeCycles } from '@/sim/machineSim'
 import { PlcRecorder, emptyRows } from '@/sim/plcRecorder'
 import type { RecordedRows } from '@/sim/plcRecorder'
@@ -66,6 +69,9 @@ export class DemoDataSource implements LiveSource {
   private raw: Record<string, { rows: RawRow[]; total: number; lastTime: number | null }> = {}
   private readonly reference: Record<string, RawRow[]>
   private readonly predictive: PredictiveSession
+  private readonly router: SerialRouter
+  private readonly trace = new TraceStore()
+  private cycles: FurnaceCycle[] = []
 
   constructor() {
     this.t0 = alignBucket(Date.now())
@@ -79,7 +85,11 @@ export class DemoDataSource implements LiveSource {
       })
       this.series.set(m.id, createSeries(this.startT, (HISTORY + DAY) / BUCKET_MS))
     })
-    for (const t of ['MachineEvents', 'ProductionCounters', 'ProcessValues', 'ProcessTags', 'QualitySamples']) this.raw[t] = { rows: [], total: 0, lastTime: null }
+    for (const t of ['MachineEvents', 'ProductionCounters', 'ProcessValues', 'ProcessTags', 'QualitySamples', 'OperationEvents', 'Nonconformances', 'MrbDecisions']) this.raw[t] = { rows: [], total: 0, lastTime: null }
+    this.router = new SerialRouter(MACHINES, this.t0, { operatorAt: operatorNoFromDefs })
+    const init = emptyRows()
+    this.router.init(this.startT, init)
+    this.keepTrace(init)
     this.reference = this.buildReference()
     this.predictive = new PredictiveSession(notifyMachinesFromDefs())
   }
@@ -108,9 +118,13 @@ export class DemoDataSource implements LiveSource {
     let any = false
     while (this.startT + (this.i + 1) * BUCKET_MS <= until) {
       const t = this.startT + this.i * BUCKET_MS
+      const routed = emptyRows()
       for (const [id, u] of this.units) {
         const rows = emptyRows()
-        u.rec.record(u.sim.step(this.i, t), rows)
+        const raw = u.sim.step(this.i, t)
+        u.rec.record(raw, rows)
+        this.router.setLot(id, raw.materialLot)
+        this.router.complete(id, t + BUCKET_MS, raw.produced, raw.rejects, routed)
         // Ham satırlar sadece son birkaç dakika için nesneye çevrilir (SQL Veri ekranı son satırları gösterir)
         this.keepRaw(rows, t > until - 10 * 60 * 1000)
         const mo = emptyOutput()
@@ -128,7 +142,10 @@ export class DemoDataSource implements LiveSource {
         out.stops.push(...mo.stops)
         out.slows.push(...mo.slows)
         out.spc.push(...mo.spc)
+        out.cycles.push(...mo.cycles)
       }
+      this.router.tick(t + BUCKET_MS, routed)
+      this.keepTrace(routed)
       this.i++
       any = true
     }
@@ -140,6 +157,7 @@ export class DemoDataSource implements LiveSource {
     for (const s of this.series.values()) s.length = this.i
     this.upsertStops(out.stops)
     this.upsertSlows(out.slows)
+    if (out.cycles.length) this.cycles = [...this.cycles, ...out.cycles]
     for (const g of out.spc) {
       const list = this.spcByMachine.get(g.machineId) ?? []
       list.push({ t: g.t, mean: g.mean, range: g.range })
@@ -202,6 +220,22 @@ export class DemoDataSource implements LiveSource {
         }))
   }
 
+  /** MES satırları: hem "SQL Server" tablolarına hem izlenebilirlik deposuna */
+  private keepTrace(rows: { opEvents: RecordedRows['opEvents']; ncrs: RecordedRows['ncrs']; mrb: RecordedRows['mrb'] }): void {
+    for (const e of rows.opEvents) {
+      this.trace.addOpEvent(e)
+      this.push('OperationEvents', e.t, (id) => ({ Id: id, SerialNo: e.serialNo, PartNumber: e.partNumber, OperationNo: e.operationNo, MachineId: e.machineId, OperatorId: e.operatorId, EventTimeUtc: iso(e.t), EventType: e.eventType, Result: e.result, HeatNo: e.heatNo, BatchNo: e.batchNo }))
+    }
+    for (const n of rows.ncrs) {
+      this.trace.addNcr(n)
+      this.push('Nonconformances', n.t, (id) => ({ Id: id, NcrNo: n.ncrNo, SerialNo: n.serialNo, PartNumber: n.partNumber, MachineId: n.machineId, OperationNo: n.operationNo, DetectedUtc: iso(n.t), DefectType: n.defectType }))
+    }
+    for (const d of rows.mrb) {
+      this.trace.addMrb(d)
+      this.push('MrbDecisions', d.t, (id) => ({ Id: id, NcrNo: d.ncrNo, DecisionUtc: iso(d.t), Disposition: d.disposition }))
+    }
+  }
+
   private buildReference(): Record<string, RawRow[]> {
     const workDate = (t: number) => {
       const d = new Date(t)
@@ -245,6 +279,7 @@ export class DemoDataSource implements LiveSource {
       Employees: PEOPLE.map((p) => ({ EmployeeId: EMPLOYEE_NO[p.id], FullName: p.name, Role: p.role, HireDate: dateOnly(this.t0 - p.experienceYears * 365.25 * DAY) })),
       ShiftAssignments: assignments,
       ShiftDefinitions: SHIFTS.map((s) => ({ ShiftCode: s.id, ShiftName: s.name, StartTime: hh(s.startHour), EndTime: hh(s.endHour) })),
+      FurnaceRecipes: FURNACE_RECIPES.map((r) => ({ MachineId: r.machineId, OperationNo: r.operation, RecipeName: r.name, SetpointC: r.setpointC, HoldMin: r.holdMin, ToleranceC: r.toleranceC, FurnaceClass: r.furnaceClass })),
       WorkOrders: MACHINES.map((m) => ({ WorkOrderNo: m.orderNo, MachineId: m.id, ProductName: m.product, TargetQty: m.dailyTarget * 5, Status: 'Released' })),
     }
   }
@@ -278,6 +313,15 @@ export class DemoDataSource implements LiveSource {
   }
   slowEvents(): SlowEvent[] {
     return this.slowList
+  }
+  partOps(): PartOp[] {
+    return this.trace.partOps()
+  }
+  ncrs(): Ncr[] {
+    return this.trace.ncrs()
+  }
+  furnaceCycles(): FurnaceCycle[] {
+    return this.cycles
   }
   spc(id: string): SpcPoint[] {
     return this.spcByMachine.get(id) ?? []

@@ -2,7 +2,7 @@ import { BUCKET_MS } from '@/lib/types'
 import type { Machine } from '@/lib/types'
 import { dayStartOf } from '@/lib/kpi'
 import { sqlStatusFromState } from '@/pipeline/rows'
-import type { CounterRow, EventRow, ProcessRow, QualityRow, TagRow } from '@/pipeline/rows'
+import type { CounterRow, EventRow, MrbRow, NcrRow, OpEventRow, ProcessRow, QualityRow, TagRow } from '@/pipeline/rows'
 import type { RawSample } from './machineSim'
 
 export interface RecordedRows {
@@ -11,9 +11,13 @@ export interface RecordedRows {
   process: ProcessRow[]
   tags: TagRow[]
   quality: QualityRow[]
+  /** MES: seri numaralı operasyon kayıtları, uygunsuzluklar ve MRB kararları (seri no yönlendiricisi yazar) */
+  opEvents: OpEventRow[]
+  ncrs: NcrRow[]
+  mrb: MrbRow[]
 }
 
-export const emptyRows = (): RecordedRows => ({ events: [], counters: [], process: [], tags: [], quality: [] })
+export const emptyRows = (): RecordedRows => ({ events: [], counters: [], process: [], tags: [], quality: [], opEvents: [], ncrs: [], mrb: [] })
 
 /**
  * Bir makinenin PLC'si gibi davranır: ham simülasyon örneklerini SQL satırlarına çevirir.

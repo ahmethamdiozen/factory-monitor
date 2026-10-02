@@ -129,10 +129,10 @@ const DEFS: MachineDef[] = [
   { id: 'M06', code: 'FRZ-02', name: '5 Eksen Freze 2', model: '5X-1250', lineId: 'L2', type: 'cnc', product: 'Kompresör bliski', partNumber: 'HPC-B-4102', operation: 'Op 30', cycleH: 6, batchSize: 1, spec: spec('Kanat profil kalınlığı', 'mm', 1.8, 0.04, 0.007) },
   { id: 'M07', code: 'FRZ-03', name: '5 Eksen Freze 3', model: '5X-1600', lineId: 'L2', type: 'cnc', product: 'Yanma odası muhafazası', partNumber: 'CMB-C-5003', operation: 'Op 20', cycleH: 5, batchSize: 1, spec: spec('Flanş kalınlığı', 'mm', 6, 0.05, 0.009) },
   { id: 'M08', code: 'FRZ-04', name: '5 Eksen Freze 4', model: '5X-1600', lineId: 'L2', type: 'cnc', product: 'Türbin muhafazası', partNumber: 'TRB-C-5104', operation: 'Op 20', cycleH: 5, batchSize: 1, spec: spec('Montaj flanşı çapı', 'mm', 820, 0.08, 0.014) },
-  { id: 'M09', code: 'FRN-01', name: 'Vakum Fırını 1', model: 'VF-1200', lineId: 'L3', type: 'furnace', product: 'Disk ve şaftlar · çözeltiye alma', partNumber: 'ISL-ÇZ-01', operation: 'Op 50', cycleH: 10, batchSize: 6, spec: spec('Sertlik', 'HRC', 30, 4, 0.7) },
-  { id: 'M10', code: 'FRN-02', name: 'Vakum Fırını 2', model: 'VF-1200', lineId: 'L3', type: 'furnace', product: 'Disk ve şaftlar · yaşlandırma', partNumber: 'ISL-YŞ-02', operation: 'Op 60', cycleH: 12, batchSize: 6, spec: spec('Sertlik', 'HRC', 42, 3, 0.5) },
+  { id: 'M09', code: 'FRN-01', name: 'Vakum Fırını 1', model: 'VF-1200', lineId: 'L3', type: 'furnace', product: 'Disk ve şaftlar · çözeltiye alma', partNumber: 'ISL-ÇZ-01', operation: 'Op 50', cycleH: 10, batchSize: 12, spec: spec('Sertlik', 'HRC', 30, 4, 0.7) },
+  { id: 'M10', code: 'FRN-02', name: 'Vakum Fırını 2', model: 'VF-1200', lineId: 'L3', type: 'furnace', product: 'Disk ve şaftlar · yaşlandırma', partNumber: 'ISL-YŞ-02', operation: 'Op 60', cycleH: 12, batchSize: 12, spec: spec('Sertlik', 'HRC', 42, 3, 0.5) },
   { id: 'M11', code: 'KPL-01', name: 'Plazma Sprey Kaplama', model: 'PS-300', lineId: 'L3', type: 'coating', product: 'Muhafaza · termal bariyer kaplama', partNumber: 'KPL-TBC-01', operation: 'Op 70', cycleH: 1.5, batchSize: 1, spec: spec('Kaplama kalınlığı', 'µm', 300, 40, 7) },
-  { id: 'M12', code: 'CMM-01', name: 'Koordinat Ölçüm Makinesi', model: 'CMM-1210', lineId: 'L4', type: 'cmm', product: 'Son ölçüm (tüm parçalar)', partNumber: 'ÖLÇ-SON', operation: 'Op 90', cycleH: 1, batchSize: 1, spec: spec('Referans bilye sapması', 'µm', 0, 2, 0.4) },
+  { id: 'M12', code: 'CMM-01', name: 'Koordinat Ölçüm Makinesi', model: 'CMM-1210', lineId: 'L4', type: 'cmm', product: 'Son ölçüm (tüm parçalar)', partNumber: 'ÖLÇ-SON', operation: 'Op 90', cycleH: 0.5, batchSize: 1, spec: spec('Referans bilye sapması', 'µm', 0, 2, 0.4) },
 ]
 
 /** Günlük hedef = ideal çevrim kapasitesi × planlanan verimlilik (%72), tam sayı parça */
@@ -159,6 +159,50 @@ MACHINES.forEach((m, i) => {
   const b = tagBaselines(m, i)
   m.channels = channelInfos(TAGS[m.type].map((d) => ({ ...d, baseline: b[d.tag] ?? null })))
 })
+
+/**
+ * Parça aileleri ve rotaları (operasyon sırası). Seri numarası yönlendiricisi
+ * (src/sim/serialRouter.ts) bir makine parçayı bitirince parçayı sıradaki operasyonun kuyruğuna koyar.
+ * Fırınlar ve CMM birden çok ailenin rotasındadır.
+ */
+export interface PartFamily {
+  id: string
+  name: string
+  partNumber: string
+  /** Seri numarası ön eki */
+  prefix: string
+  steps: { machineId: string; op: string }[]
+}
+
+export const PART_FAMILIES: PartFamily[] = [
+  { id: 'hpt-disk', name: 'HPT türbin diski', partNumber: 'HPT-D-1101', prefix: 'TD', steps: [{ machineId: 'M01', op: 'Op 10' }, { machineId: 'M09', op: 'Op 50' }, { machineId: 'M10', op: 'Op 60' }, { machineId: 'M12', op: 'Op 90' }] },
+  { id: 'hpc-disk', name: 'HPC kompresör diski', partNumber: 'HPC-D-2204', prefix: 'KD', steps: [{ machineId: 'M02', op: 'Op 10' }, { machineId: 'M09', op: 'Op 50' }, { machineId: 'M10', op: 'Op 60' }, { machineId: 'M12', op: 'Op 90' }] },
+  { id: 'lpt-shaft', name: 'LPT ana şaft', partNumber: 'LPT-S-3010', prefix: 'LS', steps: [{ machineId: 'M03', op: 'Op 20' }, { machineId: 'M04', op: 'Op 40' }, { machineId: 'M09', op: 'Op 50' }, { machineId: 'M10', op: 'Op 60' }, { machineId: 'M12', op: 'Op 90' }] },
+  { id: 'fan-blisk', name: 'Fan bliski', partNumber: 'FAN-B-4001', prefix: 'FB', steps: [{ machineId: 'M05', op: 'Op 30' }, { machineId: 'M12', op: 'Op 90' }] },
+  { id: 'hpc-blisk', name: 'Kompresör bliski', partNumber: 'HPC-B-4102', prefix: 'KB', steps: [{ machineId: 'M06', op: 'Op 30' }, { machineId: 'M12', op: 'Op 90' }] },
+  { id: 'cmb-case', name: 'Yanma odası muhafazası', partNumber: 'CMB-C-5003', prefix: 'YM', steps: [{ machineId: 'M07', op: 'Op 20' }, { machineId: 'M11', op: 'Op 70' }, { machineId: 'M12', op: 'Op 90' }] },
+  { id: 'trb-case', name: 'Türbin muhafazası', partNumber: 'TRB-C-5104', prefix: 'TM', steps: [{ machineId: 'M08', op: 'Op 20' }, { machineId: 'M11', op: 'Op 70' }, { machineId: 'M12', op: 'Op 90' }] },
+]
+
+export const FAMILY_BY_PN: Record<string, PartFamily> = Object.fromEntries(PART_FAMILIES.map((f) => [f.partNumber, f]))
+
+/** Fırın reçeteleri (AMS 2750: fırın sınıfı ve sıcaklık toleransı) */
+export interface FurnaceRecipe {
+  machineId: string
+  operation: string
+  name: string
+  setpointC: number
+  /** Gerekli tutma süresi (dk) */
+  holdMin: number
+  /** İzin verilen sapma (± °C) */
+  toleranceC: number
+  furnaceClass: number
+}
+
+export const FURNACE_RECIPES: FurnaceRecipe[] = [
+  { machineId: 'M09', operation: 'Op 50', name: 'Çözeltiye alma 980 °C', setpointC: 980, holdMin: 300, toleranceC: 6, furnaceClass: 2 },
+  { machineId: 'M10', operation: 'Op 60', name: 'Yaşlandırma 720 °C', setpointC: 720, holdMin: 360, toleranceC: 6, furnaceClass: 2 },
+]
 
 export const MACHINE_BY_ID: Record<string, Machine> = Object.fromEntries(MACHINES.map((m) => [m.id, m]))
 export const LINE_BY_ID: Record<string, Line> = Object.fromEntries(LINES.map((l) => [l.id, l]))
